@@ -1,0 +1,25 @@
+# Whiteboard Digitisation Pipeline — Python Dependencies
+# Install: pip install -r requirements.txt
+
+# --- Core ML Frameworks ---
+torch>=2.0
+torchvision>=0.15
+
+# --- Object Detection (YOLOv8) ---
+ultralytics>=8.0
+
+# --- OCR Engine (PP-OCRv3) ---
+paddlepaddle>=2.5
+paddleocr>=2.7
+
+# --- Image Processing ---
+opencv-python-headless>=4.8
+Pillow>=10.0
+numpy>=1.24
+
+# --- Data Preparation ---
+tqdm>=4.65
+
+# --- Optional Fallback OCR ---
+# easyocr>=1.7
+# pytesseract>=0.3.10

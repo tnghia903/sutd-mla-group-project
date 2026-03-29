@@ -1,0 +1,53 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Output directories
+output/
+crops/
+markdown/
+detections.png
+
+# Data directories (for synthetic generation or downloaded data)
+data/images/
+data/labels/
+data/raw/
+data/dataset.yaml
+
+# Model Weights
+*.pt
+*.pth
+weights/
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# MacOS
+.DS_Store
+
+# IDEs
+.idea/
+.vscode/
+
+# Agent related
+.agent/

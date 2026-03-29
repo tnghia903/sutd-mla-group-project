@@ -1,0 +1,443 @@
+% !TEX root = report.tex
+\documentclass[11pt, a4paper]{article}
+
+% ══════════════════════════════════════════════════════════════
+% PREAMBLE — Packages
+% ══════════════════════════════════════════════════════════════
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{mathtools}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage[backend=biber, style=ieee]{biblatex}
+\addbibresource{references.bib}
+
+% ── Code listing style ──
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!70!black}\bfseries,
+  commentstyle=\color{green!50!black}\itshape,
+  stringstyle=\color{red!60!black},
+  breaklines=true,
+  frame=single,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  captionpos=b,
+  language=Python,
+}
+
+% ── Custom commands ──
+\newcommand{\Loss}{\mathcal{L}}
+\newcommand{\blank}{\text{blank}}
+\newcommand{\Reals}{\mathbb{R}}
+
+% ══════════════════════════════════════════════════════════════
+% TITLE BLOCK
+% ══════════════════════════════════════════════════════════════
+\title{
+  \textbf{Whiteboard-to-Knowledge-Base Agent:} \\[0.3em]
+  \Large Digitising Handwritten Diagrams using Single-Shot \\
+  Object Detection and OCR with YOLOv8 and PP-OCRv3
+}
+
+\author{
+  \textbf{Author A} \quad (Student ID: XXXXXXX) \\
+  \textbf{Author B} \quad (Student ID: XXXXXXX) \\
+  \textbf{Author C} \quad (Student ID: XXXXXXX) \\
+  \textbf{Author D} \quad (Student ID: XXXXXXX) \\[1em]
+  \normalsize 42.515 Machine Learning and Analytics \\
+  \normalsize Singapore University of Technology and Design \\
+  \normalsize Spring 2026
+}
+
+\date{Submission Date: \today}
+
+\begin{document}
+\maketitle
+\begin{abstract}
+This report presents a modular machine-learning pipeline for \textbf{handwritten whiteboard digitisation} that decouples spatial region detection from sequential text recognition. The system employs a YOLOv8-nano single-shot object detector to localise semantic regions (Handwriting, Diagram, Arrow, Equation, Sticky Note) in whiteboard photographs, followed by a PP-OCRv3 recogniser grounded in the CRNN architecture with Connectionist Temporal Classification (CTC) loss to transcribe handwritten content. We formalise the theoretical underpinnings of both the spatial detection and sequential recognition stages, demonstrate the end-to-end pipeline on synthetic whiteboard images, and discuss the architectural advantages of treating whiteboard digitisation as a two-stage spatial-then-sequential problem rather than a monolithic model.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ══════════════════════════════════════════════════════════════
+% SECTION 1: MOTIVATION
+% ══════════════════════════════════════════════════════════════
+\section{Motivation}\label{sec:motivation}
+
+Whiteboards are ubiquitous in collaborative environments—meeting rooms, lecture halls, and design studios. The handwritten content captured during brainstorming sessions, architectural sketches, and mathematical derivations represents high-value intellectual output that is inherently \emph{ephemeral}: once the board is erased, the knowledge is lost.
+
+While smartphone cameras make it trivial to photograph a whiteboard, the resulting image is merely a passive raster—it cannot be searched, edited, version-controlled, or integrated into a digital knowledge base. Applying raw Optical Character Recognition (OCR) to a full whiteboard photograph produces garbled output because the engine has no understanding of the \emph{spatial structure}: handwritten notes, diagrams, arrows, equations, and sticky notes are spatially interleaved with no inherent reading order.
+
+Consider a whiteboard captured after a systems design meeting. A na\"ive OCR scan would interleave text from scattered handwriting blocks, confuse arrow annotations with text, and ignore non-textual content entirely (diagrams, flowcharts). The resulting character stream, while locally plausible, is globally incoherent.
+
+The core challenge of \textbf{whiteboard digitisation} is therefore not merely character recognition but \textbf{spatial understanding}: identifying \emph{what} regions exist on the board (handwriting, diagrams, equations, sticky notes), \emph{where} they are located, and \emph{in what order} they should be processed before any text recognition is attempted.
+
+This motivates a two-stage pipeline architecture:
+\begin{enumerate}[label=\arabic*.]
+  \item \textbf{Spatial Detection Stage:} A single-shot object detector (YOLOv8) localises and classifies whiteboard regions into semantic categories (Handwriting, Diagram, Arrow, Equation, Sticky Note).
+  \item \textbf{Sequential Recognition Stage:} A CRNN-based recogniser (PP-OCRv3) transcribes the content of each cropped text-bearing region independently, preserving the spatial layout established by the first stage.
+\end{enumerate}
+
+This decoupled architecture ensures that spatial routing errors do not propagate into the recognition phase, and vice versa—a principle of fault isolation that is well-understood in systems engineering but under-appreciated in monolithic deep-learning approaches.
+
+
+% ══════════════════════════════════════════════════════════════
+% SECTION 2: CONTEXT
+% ══════════════════════════════════════════════════════════════
+\section{Context}\label{sec:context}
+
+We position our hybrid pipeline against three established paradigms in handwritten content understanding:
+
+\subsection{Traditional Sliding-Window CNNs}
+Early whiteboard reading systems employed sliding-window Convolutional Neural Networks that classified each pixel or patch independently~\cite{kota2014whiteboard}. While effective for binary segmentation (ink vs.\ background), these methods suffer from:
+\begin{itemize}
+  \item \textbf{Computational redundancy:} Overlapping windows re-process the same spatial features.
+  \item \textbf{Loss of global context:} A small receptive field cannot distinguish handwritten text from a diagram when both contain dark strokes on a light background.
+  \item \textbf{Post-processing overhead:} Connected-component analysis and heuristic merging are required to assemble pixel-level predictions into coherent regions.
+\end{itemize}
+
+\subsection{Pure Sequence-to-Sequence Models}
+Transformer-based models such as TrOCR~\cite{li2023trocr} and Donut~\cite{kim2022donut} attempt to solve detection and recognition jointly by encoding spatial coordinates as token-level features. While architecturally elegant, these models:
+\begin{itemize}
+  \item Require enormous pre-training corpora (millions of document pages), which are scarce for handwritten whiteboard content.
+  \item Struggle with out-of-distribution layouts not seen during pre-training—whiteboards are inherently freeform.
+  \item Conflate two fundamentally different learning objectives—spatial localisation and sequence generation—into a single loss function, creating optimisation tension.
+\end{itemize}
+
+\subsection{The Hybrid Pipeline (Our Approach)}
+By decoupling spatial detection from text recognition, our pipeline leverages the strengths of each sub-model:
+\begin{itemize}
+  \item YOLOv8 excels at \emph{single-shot, real-time} bounding-box regression with strong localisation accuracy~\cite{redmon2016yolo, jocher2023yolov8}, and can be fine-tuned on whiteboard-specific classes with a small labelled dataset.
+  \item PP-OCRv3's CRNN backbone, trained specifically on text-line images including handwritten samples, achieves robust character recognition without needing to ``understand'' the full board layout~\cite{du2022ppocr}.
+\end{itemize}
+
+This separation-of-concerns principle means each module can be independently developed, evaluated, and upgraded—a critical advantage for asynchronous team collaboration.
+
+
+% ══════════════════════════════════════════════════════════════
+% SECTION 3: THEORY (Highest-Weighted Section)
+% ══════════════════════════════════════════════════════════════
+\section{Theory: Spatial-Sequential Modelling}\label{sec:theory}
+
+This section provides a first-principles derivation of the two core theoretical pillars underlying our pipeline: \textbf{(i)} the single-shot spatial detection formulation used by YOLO, and \textbf{(ii)} the Connectionist Temporal Classification (CTC) loss that enables alignment-free sequence recognition in the CRNN/PP-OCRv3 stage.
+
+% ── 3.1 Spatial Detection ──
+\subsection{Spatial Feature Extraction via Convolutional Backbones}\label{sec:cnn_features}
+
+Let $\mathbf{I} \in \Reals^{H \times W \times 3}$ denote an input whiteboard photograph. A convolutional backbone $f_\theta$ (e.g., CSPDarknet in YOLOv8) maps this image to a multi-scale feature hierarchy:
+\begin{equation}\label{eq:feature_extraction}
+  \mathbf{F}^{(l)} = f_\theta^{(l)}(\mathbf{I}), \quad l \in \{1, 2, \ldots, L\}
+\end{equation}
+where $\mathbf{F}^{(l)} \in \Reals^{H_l \times W_l \times C_l}$ is the feature map at scale $l$, with spatial resolution decreasing and channel depth increasing as $l$ grows. These multi-scale features allow the detector to localise both large regions (e.g., full diagrams, large handwriting blocks) and small regions (e.g., single-word annotations, arrow tips).
+
+\subsection{Unified Bounding-Box Regression}\label{sec:bbox_regression}
+
+For each spatial position $(i, j)$ in $\mathbf{F}^{(l)}$, YOLOv8 predicts a set of bounding-box parameters:
+\begin{equation}\label{eq:yolo_output}
+  \hat{\mathbf{b}}_{ij} = \bigl(\hat{x}_c,\; \hat{y}_c,\; \hat{w},\; \hat{h},\; \hat{p}_{\text{obj}},\; \hat{p}_{c_1}, \ldots, \hat{p}_{c_K}\bigr)
+\end{equation}
+where $(\hat{x}_c, \hat{y}_c)$ are the predicted centre coordinates (normalised to $[0,1]$), $(\hat{w}, \hat{h})$ are the predicted width and height, $\hat{p}_{\text{obj}}$ is the objectness score, and $\hat{p}_{c_k}$ is the class probability for category $k \in \{1, \ldots, K\}$. In our whiteboard context, $K = 5$ corresponding to: Handwriting, Diagram, Arrow, Equation, and Sticky Note.
+
+The detection loss $\Loss_{\text{det}}$ combines three objectives:
+\begin{equation}\label{eq:det_loss}
+  \Loss_{\text{det}} = \lambda_{\text{box}} \Loss_{\text{CIoU}} + \lambda_{\text{obj}} \Loss_{\text{obj}} + \lambda_{\text{cls}} \Loss_{\text{cls}}
+\end{equation}
+
+The Complete IoU (CIoU) loss~\cite{zheng2020ciou} is defined as:
+\begin{equation}\label{eq:ciou}
+  \Loss_{\text{CIoU}} = 1 - \text{IoU} + \frac{\rho^2(\mathbf{b}, \hat{\mathbf{b}})}{c^2} + \alpha v
+\end{equation}
+where $\rho(\cdot, \cdot)$ denotes the Euclidean distance between box centres, $c$ is the diagonal of the smallest enclosing rectangle, $v$ measures aspect-ratio consistency, and $\alpha$ is a balancing coefficient.
+
+\textbf{Bounding-box crop extraction.}  Given a normalised prediction $(\hat{x}_c, \hat{y}_c, \hat{w}, \hat{h})$ and image dimensions $(W, H)$, the absolute pixel coordinates for cropping are:
+\begin{equation}\label{eq:crop}
+\begin{aligned}
+  x_{\min} &= \bigl\lfloor (\hat{x}_c - \hat{w}/2) \cdot W \bigr\rfloor, &\quad
+  x_{\max} &= \bigl\lfloor (\hat{x}_c + \hat{w}/2) \cdot W \bigr\rfloor \\
+  y_{\min} &= \bigl\lfloor (\hat{y}_c - \hat{h}/2) \cdot H \bigr\rfloor, &\quad
+  y_{\max} &= \bigl\lfloor (\hat{y}_c + \hat{h}/2) \cdot H \bigr\rfloor
+\end{aligned}
+\end{equation}
+
+The cropped region tensor is then:
+\begin{equation}
+  \mathbf{R} = \mathbf{I}\bigl[y_{\min}:y_{\max},\; x_{\min}:x_{\max},\; :\bigr]
+\end{equation}
+
+% ── Diagram placeholder ──
+\begin{figure}[H]
+  \centering
+  \fbox{\parbox{0.85\textwidth}{\centering
+    \vspace{2cm}
+    \textbf{[INSERT DIAGRAM 1 HERE]} \\[0.5em]
+    Architecture diagram of the YOLOv8 detection head showing the \\
+    CSPDarknet backbone $\to$ FPN neck $\to$ decoupled detection heads \\
+    producing $(\hat{x}_c, \hat{y}_c, \hat{w}, \hat{h}, \hat{p}_{\text{obj}}, \hat{p}_{c_k})$.
+    \vspace{2cm}
+  }}
+  \caption{YOLOv8 architecture for whiteboard region detection. The Feature Pyramid Network (FPN) fuses multi-scale features, enabling simultaneous detection of both large regions (diagrams, handwriting blocks) and small regions (single-word annotations, arrow tips).}
+  \label{fig:yolo_arch}
+\end{figure}
+
+
+% ── 3.2 Sequential Recognition: CRNN ──
+\subsection{Sequential Modelling via Recurrent Neural Networks}\label{sec:rnn}
+
+Once a text-bearing region $\mathbf{R} \in \Reals^{h \times w \times 3}$ is cropped—whether it contains handwriting or a mathematical equation—it must be transcribed into a character sequence $\mathbf{l} = (l_1, l_2, \ldots, l_S)$ where $l_s \in \Sigma$ is a character from the alphabet $\Sigma$ and $S$ is the (variable-length) label length.
+
+The CRNN architecture~\cite{shi2017crnn} solves this in three stages:
+
+\paragraph{Stage A — Convolutional Feature Extraction.}
+A CNN (e.g., ResNet, SVTR-LCNet in PP-OCRv3) extracts a feature map $\mathbf{F}_{\text{ocr}} \in \Reals^{1 \times T \times d}$ from the resized input crop, where $T$ is the number of horizontal time-steps (columns) and $d$ is the feature dimension. This effectively converts the 2D image into a 1D sequence of column-wise feature vectors:
+\begin{equation}\label{eq:cnn_to_seq}
+  \mathbf{x}_\tau = \mathbf{F}_{\text{ocr}}[1, \tau, :], \quad \tau = 1, 2, \ldots, T
+\end{equation}
+
+\paragraph{Stage B — Bidirectional RNN Encoding.}
+The feature sequence $(\mathbf{x}_1, \ldots, \mathbf{x}_T)$ is fed into a bidirectional LSTM (BiLSTM) to capture both left-to-right and right-to-left contextual dependencies. This is particularly important for handwriting, where character shapes depend heavily on neighbouring strokes. The hidden state at time-step $\tau$ is:
+\begin{equation}\label{eq:bilstm}
+  \mathbf{h}_\tau = \bigl[\overrightarrow{\mathbf{h}}_\tau;\; \overleftarrow{\mathbf{h}}_\tau\bigr]
+\end{equation}
+where the forward hidden state is computed by the standard LSTM recurrence:
+\begin{align}
+  \mathbf{f}_\tau &= \sigma\bigl(\mathbf{W}_f [\mathbf{h}_{\tau-1}; \mathbf{x}_\tau] + \mathbf{b}_f\bigr) \label{eq:forget_gate}\\
+  \mathbf{i}_\tau &= \sigma\bigl(\mathbf{W}_i [\mathbf{h}_{\tau-1}; \mathbf{x}_\tau] + \mathbf{b}_i\bigr) \label{eq:input_gate}\\
+  \tilde{\mathbf{c}}_\tau &= \tanh\bigl(\mathbf{W}_c [\mathbf{h}_{\tau-1}; \mathbf{x}_\tau] + \mathbf{b}_c\bigr) \label{eq:cell_candidate}\\
+  \mathbf{c}_\tau &= \mathbf{f}_\tau \odot \mathbf{c}_{\tau-1} + \mathbf{i}_\tau \odot \tilde{\mathbf{c}}_\tau \label{eq:cell_state}\\
+  \mathbf{o}_\tau &= \sigma\bigl(\mathbf{W}_o [\mathbf{h}_{\tau-1}; \mathbf{x}_\tau] + \mathbf{b}_o\bigr) \label{eq:output_gate}\\
+  \overrightarrow{\mathbf{h}}_{\tau} &= \mathbf{o}_\tau \odot \tanh(\mathbf{c}_\tau) \label{eq:hidden_state}
+\end{align}
+Here, $\sigma(\cdot)$ is the sigmoid function, $\odot$ denotes element-wise multiplication, and $\mathbf{W}_*, \mathbf{b}_*$ are learnable parameters. The \textbf{hidden state transition} $\mathbf{h}_{\tau} \to \mathbf{h}_{\tau+1}$ integrates the current input $\mathbf{x}_{\tau+1}$ with the memory carried in $\mathbf{c}_\tau$, enabling the network to model long-range character dependencies in handwriting (e.g., recognising that ``tion'' likely follows ``na'' in ``nation'').
+
+% ── Diagram placeholder ──
+\begin{figure}[H]
+  \centering
+  \fbox{\parbox{0.85\textwidth}{\centering
+    \vspace{2cm}
+    \textbf{[INSERT DIAGRAM 2 HERE]} \\[0.5em]
+    CRNN architecture: CNN feature extractor $\to$ column-wise sequence \\
+    $\to$ BiLSTM encoder $\to$ CTC decoder. Show the unrolled RNN with \\
+    $h_{\tau} \to h_{\tau+1}$ transitions and the softmax output layer.
+    \vspace{2cm}
+  }}
+  \caption{CRNN architecture for handwriting recognition. The CNN converts the 2D crop into a 1D feature sequence; the BiLSTM captures contextual dependencies between handwritten strokes; the CTC layer decodes the variable-length output without requiring pre-segmented character labels.}
+  \label{fig:crnn_arch}
+\end{figure}
+
+
+% ── 3.3 CTC Loss ──
+\subsection{Connectionist Temporal Classification (CTC) Loss}\label{sec:ctc}
+
+The central challenge in sequence recognition is \textbf{alignment}: the model produces $T$ time-step outputs, but the target label $\mathbf{l}$ has $S \leq T$ characters. CTC~\cite{graves2006ctc} resolves this by introducing a \emph{blank} token $\epsilon$ and marginalising over all valid alignments. This property is especially valuable for handwriting, where character widths vary dramatically depending on the writer's style.
+
+\paragraph{Augmented Alphabet.}
+Define $\Sigma' = \Sigma \cup \{\epsilon\}$, where $\epsilon$ is a special blank symbol that encodes ``no output at this time-step.''
+
+\paragraph{Per-Time-Step Distribution.}
+A linear projection followed by softmax transforms each BiLSTM output into a probability distribution over $\Sigma'$:
+\begin{equation}\label{eq:softmax}
+  y_k^\tau = P(\pi_\tau = k \mid \mathbf{h}_\tau) = \frac{\exp(\mathbf{w}_k^\top \mathbf{h}_\tau + b_k)}{\sum_{k'=1}^{|\Sigma'|} \exp(\mathbf{w}_{k'}^\top \mathbf{h}_\tau + b_{k'})}
+\end{equation}
+where $\pi_\tau \in \Sigma'$ is the emitted symbol at time $\tau$.
+
+\paragraph{Alignment Path.}
+A \emph{path} $\boldsymbol{\pi} = (\pi_1, \pi_2, \ldots, \pi_T)$ is a length-$T$ sequence over $\Sigma'$. The \emph{many-to-one} mapping $\mathcal{B}: \Sigma'^T \to \Sigma^{\leq T}$ removes repeated characters and then removes all $\epsilon$ symbols. For example:
+\[
+  \mathcal{B}(\text{a}, \epsilon, \epsilon, \text{b}, \text{b}, \epsilon, \text{c}) = \text{abc}
+\]
+
+\paragraph{Conditional Probability.}
+Assuming conditional independence between time-steps given the hidden states, the probability of a path is:
+\begin{equation}\label{eq:path_prob}
+  P(\boldsymbol{\pi} \mid \mathbf{I}) = \prod_{\tau=1}^{T} y_{\pi_\tau}^\tau
+\end{equation}
+
+The probability of the target label $\mathbf{l}$ is obtained by marginalising over all paths that collapse to $\mathbf{l}$:
+\begin{equation}\label{eq:ctc_marginal}
+  \boxed{P(\mathbf{l} \mid \mathbf{I}) = \sum_{\boldsymbol{\pi} \in \mathcal{B}^{-1}(\mathbf{l})} \prod_{\tau=1}^{T} y_{\pi_\tau}^\tau}
+\end{equation}
+
+\paragraph{CTC Loss Function.}
+The training objective is to maximise the log-likelihood, or equivalently minimise the negative log-probability:
+\begin{equation}\label{eq:ctc_loss}
+  \boxed{\Loss_{\text{CTC}} = -\ln P(\mathbf{l} \mid \mathbf{I}) = -\ln \sum_{\boldsymbol{\pi} \in \mathcal{B}^{-1}(\mathbf{l})} \prod_{\tau=1}^{T} y_{\pi_\tau}^\tau}
+\end{equation}
+
+Direct enumeration of $\mathcal{B}^{-1}(\mathbf{l})$ is computationally intractable (exponential in $T$). Graves et al.~\cite{graves2006ctc} showed that the forward-backward algorithm—analogous to the HMM forward algorithm—computes $P(\mathbf{l} \mid \mathbf{I})$ in $\mathcal{O}(T \cdot |\mathbf{l}'|)$ time, where $\mathbf{l}' = (\epsilon, l_1, \epsilon, l_2, \epsilon, \ldots, \epsilon, l_S, \epsilon)$ is the modified label with interleaved blanks.
+
+\paragraph{Forward Variable.}
+Define the forward variable:
+\begin{equation}\label{eq:forward_var}
+  \alpha_\tau(s) = \sum_{\substack{\boldsymbol{\pi}_{1:\tau} \\ \mathcal{B}(\boldsymbol{\pi}_{1:\tau}) = \mathbf{l}'_{1:s}}} \prod_{t=1}^{\tau} y_{\pi_t}^t
+\end{equation}
+This represents the total probability of all length-$\tau$ sub-paths whose collapsed output matches the first $s$ symbols of $\mathbf{l}'$. The recursion and base cases follow standard dynamic programming over the lattice $(1 \leq \tau \leq T) \times (1 \leq s \leq |\mathbf{l}'|)$.
+
+% ── Diagram placeholder ──
+\begin{figure}[H]
+  \centering
+  \fbox{\parbox{0.85\textwidth}{\centering
+    \vspace{2.5cm}
+    \textbf{[INSERT DIAGRAM 3 HERE]} \\[0.5em]
+    CTC alignment lattice showing the forward variable $\alpha_\tau(s)$ \\
+    over time-steps $\tau$ (horizontal) and modified-label positions $s$ \\
+    (vertical). Illustrate allowed transitions: stay on blank, \\
+    stay on same character, or advance to next character.
+    \vspace{2.5cm}
+  }}
+  \caption{CTC forward-backward lattice. Horizontal axis: RNN time-steps $\tau$. Vertical axis: modified label positions $s$. Arrows indicate the allowed transitions used in the dynamic programming computation of $P(\mathbf{l} \mid \mathbf{I})$.}
+  \label{fig:ctc_lattice}
+\end{figure}
+
+
+\paragraph{Decoding.}
+At inference time, the most probable label is obtained via:
+\begin{equation}\label{eq:ctc_decode}
+  \mathbf{l}^* = \mathcal{B}\!\left(\argmax_{\boldsymbol{\pi}} P(\boldsymbol{\pi} \mid \mathbf{I})\right) \approx \mathcal{B}\!\left(\argmax_{\pi_1} y_{\pi_1}^1,\; \argmax_{\pi_2} y_{\pi_2}^2,\; \ldots,\; \argmax_{\pi_T} y_{\pi_T}^T\right)
+\end{equation}
+The right-hand side is the \emph{greedy decoding} approximation, which selects the most probable symbol at each time-step independently. While not globally optimal, it is computationally efficient and works well in practice when combined with a sufficiently expressive BiLSTM encoder.
+
+
+% ══════════════════════════════════════════════════════════════
+% SECTION 4: PACKAGES REQUIRED
+% ══════════════════════════════════════════════════════════════
+\section{Packages Required}\label{sec:packages}
+
+Table~\ref{tab:packages} enumerates the core libraries used in our pipeline, their roles, and the pipeline stage to which they belong.
+
+\begin{table}[H]
+\centering
+\caption{Software dependencies of the whiteboard digitisation pipeline.}
+\label{tab:packages}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Package} & \textbf{Version} & \textbf{Role} & \textbf{Stage} \\
+\midrule
+\texttt{ultralytics}  & $\geq 8.0$  & YOLOv8 model loading, training, and inference & Detection \\
+\texttt{paddleocr}     & $\geq 2.7$  & PP-OCRv3 text detection and recognition       & Transcription \\
+\texttt{paddlepaddle}  & $\geq 2.5$  & PaddlePaddle deep-learning framework           & Transcription \\
+\texttt{torch}         & $\geq 2.0$  & PyTorch backend for YOLOv8                    & Detection \\
+\texttt{torchvision}   & $\geq 0.15$ & Image transforms and pre-trained backbones     & Detection \\
+\texttt{opencv-python} & $\geq 4.8$  & Image I/O, colour-space conversion, CLAHE      & All stages \\
+\texttt{numpy}         & $\geq 1.24$ & Tensor manipulation and array operations       & All stages \\
+\texttt{Pillow}        & $\geq 10.0$ & Image creation and format conversion           & Data prep \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ══════════════════════════════════════════════════════════════
+% SECTION 5: APPLICATION
+% ══════════════════════════════════════════════════════════════
+\section{Application}\label{sec:application}
+
+\subsection{Standalone Model vs.\ ML Pipeline}
+
+A \emph{standalone ML model} is a single trained network that receives raw input and produces a final prediction. In contrast, an \emph{ML pipeline} is a \textbf{directed acyclic graph (DAG)} of heterogeneous processing stages, each performing a specialised transformation on the data. Table~\ref{tab:model_vs_pipeline} contrasts the two paradigms.
+
+\begin{table}[H]
+\centering
+\caption{Standalone model versus ML pipeline comparison.}
+\label{tab:model_vs_pipeline}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Dimension} & \textbf{Standalone Model} & \textbf{ML Pipeline} \\
+\midrule
+Architecture     & Single forward pass       & Multi-stage DAG \\
+Modularity       & Monolithic                & Composable, replaceable stages \\
+Error isolation  & End-to-end backprop       & Per-stage debugging \\
+Team scalability & Single developer          & Parallel development \\
+Reusability      & Task-specific             & Stages reusable across tasks \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Pipeline Architecture: Four-Module Walkthrough}
+
+Our pipeline is implemented as four independent Python scripts, each owned by a different team member to enable fully asynchronous development. Figure~\ref{fig:pipeline_flow} illustrates the data flow.
+
+% ── Diagram placeholder ──
+\begin{figure}[H]
+  \centering
+  \fbox{\parbox{0.9\textwidth}{\centering
+    \vspace{1.5cm}
+    \textbf{[INSERT DIAGRAM 4 HERE]} \\[0.5em]
+    Pipeline flow diagram: \\
+    \texttt{data\_prep.py} $\to$ \texttt{layout\_detector.py} $\to$ \texttt{sequence\_transcriber.py} $\to$ \texttt{pipeline\_orchestrator.py} \\[0.3em]
+    Show data types at each boundary: \\
+    Whiteboard Photos $\to$ YOLO labels $\to$ \texttt{np.ndarray} image $\to$ \texttt{CroppedRegion[]} $\to$ \texttt{TranscriptionResult[]} $\to$ Markdown
+    \vspace{1.5cm}
+  }}
+  \caption{End-to-end data flow through the four-module whiteboard digitisation pipeline.}
+  \label{fig:pipeline_flow}
+\end{figure}
+
+\subsubsection{Module 1: \texttt{data\_prep.py} — Data Acquisition \& Generation}
+
+This module handles the offline preparation of training and evaluation data:
+\begin{enumerate}
+  \item Generates a configurable set ($n = 30$) of synthetic whiteboard images with randomised region placements.
+  \item Creates COCO-format JSON annotations for five classes: Handwriting, Diagram, Arrow, Equation, and Sticky Note.
+  \item Converts each bounding box from COCO format $[x_{\min}, y_{\min}, w, h]$ (absolute pixels) to YOLO format $[x_c, y_c, w_n, h_n]$ (normalised to $[0,1]$) using Equation~\eqref{eq:crop}.
+  \item Writes per-image \texttt{.txt} label files and a \texttt{dataset.yaml} configuration.
+\end{enumerate}
+
+\subsubsection{Module 2: \texttt{layout\_detector.py} — Spatial Detection \& Cropping}
+
+This module performs the spatial detection stage:
+\begin{enumerate}
+  \item Loads a YOLOv8-nano checkpoint via the Ultralytics API.
+  \item Accepts a whiteboard image (camera photo or scan).
+  \item Applies whiteboard-specific preprocessing (CLAHE contrast enhancement for uneven lighting).
+  \item Runs single-shot inference to produce bounding-box predictions for five region classes.
+  \item Mathematically crops each detected region from the original image tensor.
+  \item Returns a sorted list of \texttt{CroppedRegion} dataclass instances (sorted top-to-bottom for spatial ordering).
+\end{enumerate}
+
+\subsubsection{Module 3: \texttt{sequence\_transcriber.py} — OCR Recognition}
+
+This is the advanced module implementing the sequential recognition stage:
+\begin{enumerate}
+  \item Wraps the PP-OCRv3 engine (with fallback to EasyOCR and Tesseract).
+  \item Applies whiteboard-optimised preprocessing (CLAHE, morphological denoising, deskew correction, adaptive thresholding).
+  \item Runs CTC-decoded inference on each cropped Handwriting and Equation region.
+  \item Returns \texttt{TranscriptionResult} objects containing decoded text and confidence scores.
+\end{enumerate}
+
+\subsubsection{Module 4: \texttt{pipeline\_orchestrator.py} — Integration \& Output}
+
+The orchestrator chains the three upstream modules into a single CLI-invocable pipeline:
+\begin{lstlisting}[language=bash, caption={Pipeline invocation}]
+python pipeline_orchestrator.py whiteboard_photo.jpg --conf 0.25
+\end{lstlisting}
+
+The execution flow is:
+\begin{align*}
+  &\texttt{Ingestion:} \quad \text{Whiteboard Photo} \xrightarrow{\texttt{OpenCV}} \mathbf{I} \in \Reals^{H \times W \times 3} \\
+  &\texttt{Detection:} \quad \mathbf{I} \xrightarrow{\text{YOLOv8}} \bigl\{\texttt{CroppedRegion}_i\bigr\}_{i=1}^{N} \\
+  &\texttt{Transcription:} \quad \bigl\{\texttt{CroppedRegion}_i\bigr\} \xrightarrow{\text{PP-OCRv3}} \bigl\{\texttt{TranscriptionResult}_i\bigr\}_{i=1}^{N} \\
+  &\texttt{Assembly:} \quad \bigl\{\texttt{TranscriptionResult}_i\bigr\} \xrightarrow{\text{Markdown}} \texttt{output.md}
+\end{align*}
+
+
+% ══════════════════════════════════════════════════════════════
+% SECTION 6: SOURCES
+% ══════════════════════════════════════════════════════════════
+\section{Sources}\label{sec:sources}
+
+\printbibliography[heading=none]
+
+\end{document}

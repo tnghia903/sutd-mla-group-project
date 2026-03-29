@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Whiteboard Theory Explorer — Handwritten Diagram Digitisation</title>
+  <meta name="description" content="Interactive visual explainer for the mathematical theory behind whiteboard digitisation using YOLOv8 and PP-OCRv3 with CTC Loss." />
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+  <!-- KaTeX for math -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}]});"></script>
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ═══════════════════ NAVIGATION ═══════════════════ -->
+  <nav id="main-nav">
+    <div class="nav-brand">
+      <span class="nav-icon">◆</span>
+      DLA Theory
+    </div>
+    <div class="nav-links">
+      <a href="#hero">Home</a>
+      <a href="#problem">Problem</a>
+      <a href="#cnn">CNN Features</a>
+      <a href="#yolo">YOLO Detection</a>
+      <a href="#crnn">CRNN</a>
+      <a href="#lstm">LSTM Gates</a>
+      <a href="#ctc">CTC Loss</a>
+      <a href="#pipeline">Pipeline</a>
+    </div>
+    <div class="nav-progress">
+      <div class="nav-progress-bar" id="scroll-progress"></div>
+    </div>
+  </nav>
+
+  <!-- ═══════════════════ HERO ═══════════════════ -->
+  <section id="hero" class="section hero-section">
+    <div class="hero-particles" id="hero-particles"></div>
+    <div class="hero-content">
+      <div class="hero-badge">42.515 Machine Learning & Analytics — Spring 2026</div>
+      <h1>Whiteboard-to-Knowledge-Base</h1>
+      <p class="hero-subtitle">An interactive journey through the mathematics of <strong>spatial object detection</strong> and <strong>handwriting transcription</strong></p>
+      <div class="hero-equation">
+        $$\mathcal{L}_{\text{CTC}} = -\ln \sum_{\boldsymbol{\pi} \in \mathcal{B}^{-1}(\mathbf{l})} \prod_{\tau=1}^{T} y_{\pi_\tau}^\tau$$
+      </div>
+      <div class="hero-cta">
+        <a href="#problem" class="btn btn-primary">Begin Exploration</a>
+        <a href="#pipeline" class="btn btn-outline">View Pipeline</a>
+      </div>
+      <div class="scroll-indicator">
+        <div class="scroll-arrow"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ SECTION 1: THE PROBLEM ═══════════════════ -->
+  <section id="problem" class="section">
+    <div class="section-header">
+      <span class="section-number">01</span>
+      <h2>The Problem</h2>
+      <p class="section-lead">Why raw OCR fails on whiteboard photos</p>
+    </div>
+    <div class="content-container">
+      <div class="two-col">
+        <div class="col fade-in-left">
+          <div class="problem-card" id="naive-ocr">
+            <h3>Naïve OCR Approach</h3>
+            <div class="doc-sim" id="naive-doc">
+              <div class="doc-page">
+                <div class="doc-title-block">Whiteboard Photo</div>
+                <div class="doc-cols">
+                  <div class="doc-col doc-col-left">
+                    <div class="doc-text-line" style="width:70%"></div>
+                    <div class="doc-text-line" style="width:55%"></div>
+                    <div class="doc-text-line" style="width:80%"></div>
+                    <div class="doc-text-line" style="width:45%"></div>
+                  </div>
+                  <div class="doc-col doc-col-right">
+                    <div class="doc-fig"></div>
+                    <div class="doc-text-line" style="width:60%"></div>
+                    <div class="doc-text-line" style="width:50%"></div>
+                  </div>
+                </div>
+                <div class="doc-table"></div>
+              </div>
+              <div class="scan-line" id="scan-line-naive"></div>
+            </div>
+            <div class="ocr-output bad-output" id="naive-output">
+              <code>y = mx b Meeting agenda → → notes circle box arrow connect ...</code>
+            </div>
+            <div class="status-badge bad">✗ Spatial structure destroyed</div>
+          </div>
+        </div>
+
+        <div class="col fade-in-right">
+          <div class="problem-card" id="smart-ocr">
+            <h3>Detection Pipeline Approach</h3>
+            <div class="doc-sim" id="smart-doc">
+              <div class="doc-page">
+                <div class="doc-title-block">Whiteboard Photo</div>
+                <div class="doc-cols">
+                  <div class="doc-col doc-col-left">
+                    <div class="doc-text-line" style="width:70%"></div>
+                    <div class="doc-text-line" style="width:55%"></div>
+                    <div class="doc-text-line" style="width:80%"></div>
+                    <div class="doc-text-line" style="width:45%"></div>
+                  </div>
+                  <div class="doc-col doc-col-right">
+                    <div class="doc-fig"></div>
+                    <div class="doc-text-line" style="width:60%"></div>
+                    <div class="doc-text-line" style="width:50%"></div>
+                  </div>
+                </div>
+                <div class="doc-table"></div>
+              </div>
+              <div class="det-box det-title" data-label="Handwriting"></div>
+              <div class="det-box det-text-l" data-label="Equation"></div>
+              <div class="det-box det-text-r" data-label="Diagram"></div>
+              <div class="det-box det-figure" data-label="Arrow"></div>
+              <div class="det-box det-table" data-label="Sticky Note"></div>
+            </div>
+            <div class="ocr-output good-output" id="smart-output">
+              <code>## Meeting Notes\n\ny = mx + b\n\n[DIAGRAM: flowchart] → [STICKY NOTE] ✓</code>
+            </div>
+            <div class="status-badge good">✓ Spatial structure preserved</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="insight-box fade-in">
+        <div class="insight-icon">💡</div>
+        <div>
+          <strong>Key Insight:</strong> The problem is not character recognition accuracy—modern OCR is near-human. The problem is <em>spatial understanding</em>: knowing <strong>what</strong> regions exist on the whiteboard (handwriting, diagrams, equations), <strong>where</strong> they are, and <strong>in what order</strong> to process them.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ SECTION 2: CNN FEATURES ═══════════════════ -->
+  <section id="cnn" class="section section-dark">
+    <div class="section-header">
+      <span class="section-number">02</span>
+      <h2>Spatial Feature Extraction</h2>
+      <p class="section-lead">How CNNs convert pixels into spatial understanding</p>
+    </div>
+    <div class="content-container">
+      <div class="theory-block fade-in">
+        <p>Let $\mathbf{I} \in \mathbb{R}^{H \times W \times 3}$ be a document page image. A convolutional backbone $f_\theta$ maps it to a <strong>multi-scale feature hierarchy</strong>:</p>
+        <div class="equation-box">
+          $$\mathbf{F}^{(l)} = f_\theta^{(l)}(\mathbf{I}), \quad l \in \{1, 2, \ldots, L\}$$
+        </div>
+        <p>where $\mathbf{F}^{(l)} \in \mathbb{R}^{H_l \times W_l \times C_l}$ has <em>decreasing spatial resolution</em> and <em>increasing channel depth</em> as $l$ grows.</p>
+      </div>
+
+      <div class="cnn-viz fade-in" id="cnn-viz">
+        <h3 class="viz-title">Interactive: Multi-Scale Feature Pyramid</h3>
+        <p class="viz-desc">Click on a scale level to see how resolution and depth trade off</p>
+        <div class="pyramid-container">
+          <div class="pyramid-controls">
+            <button class="pyramid-btn active" data-level="1">Scale 1<br><small>High Res</small></button>
+            <button class="pyramid-btn" data-level="2">Scale 2<br><small>Medium</small></button>
+            <button class="pyramid-btn" data-level="3">Scale 3<br><small>Low Res</small></button>
+          </div>
+          <div class="pyramid-display">
+            <div class="pyramid-feature-map" id="pyramid-map">
+              <canvas id="feature-canvas" width="400" height="300"></canvas>
+            </div>
+            <div class="pyramid-info" id="pyramid-info">
+              <div class="info-row"><span class="info-label">Spatial Resolution</span><span class="info-value" id="info-resolution">52 × 52</span></div>
+              <div class="info-row"><span class="info-label">Channels</span><span class="info-value" id="info-channels">128</span></div>
+              <div class="info-row"><span class="info-label">Receptive Field</span><span class="info-value" id="info-receptive">Small regions</span></div>
+              <div class="info-row"><span class="info-label">Detects</span><span class="info-value" id="info-detects">Arrows, Small Annotations</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="theory-block fade-in">
+        <p>The <strong>Feature Pyramid Network (FPN)</strong> fuses these multi-scale features, enabling the detector to simultaneously localise:</p>
+        <div class="scale-tags">
+          <span class="scale-tag tag-small">Small: Arrows, Annotations</span>
+          <span class="scale-tag tag-medium">Medium: Handwriting, Equations</span>
+          <span class="scale-tag tag-large">Large: Diagrams, Sticky Notes</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ SECTION 3: YOLO DETECTION ═══════════════════ -->
+  <section id="yolo" class="section">
+    <div class="section-header">
+      <span class="section-number">03</span>
+      <h2>Single-Shot Detection (YOLO)</h2>
+      <p class="section-lead">Unified bounding-box regression in one forward pass</p>
+    </div>
+    <div class="content-container">
+      <div class="theory-block fade-in">
+        <p>For each spatial position $(i, j)$ in the feature map, YOLOv8 predicts:</p>
+        <div class="equation-box">
+          $$\hat{\mathbf{b}}_{ij} = \bigl(\hat{x}_c,\; \hat{y}_c,\; \hat{w},\; \hat{h},\; \hat{p}_{\text{obj}},\; \hat{p}_{c_1}, \ldots, \hat{p}_{c_K}\bigr)$$
+        </div>
+      </div>
+
+      <!-- Interactive YOLO Grid -->
+      <div class="yolo-viz fade-in" id="yolo-viz">
+        <h3 class="viz-title">Interactive: YOLO Grid Prediction</h3>
+        <p class="viz-desc">Hover over grid cells to see predicted bounding boxes. Click to toggle detections.</p>
+        <div class="yolo-container">
+          <canvas id="yolo-canvas" width="560" height="420"></canvas>
+          <div class="yolo-legend">
+            <div class="legend-item"><span class="legend-color" style="background:#4ade80"></span>Handwriting</div>
+            <div class="legend-item"><span class="legend-color" style="background:#60a5fa"></span>Diagram</div>
+            <div class="legend-item"><span class="legend-color" style="background:#f472b6"></span>Arrow</div>
+            <div class="legend-item"><span class="legend-color" style="background:#a855f7"></span>Equation</div>
+            <div class="legend-item"><span class="legend-color" style="background:#fb923c"></span>Sticky Note</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Detection Loss -->
+      <div class="theory-block fade-in">
+        <h3>Detection Loss</h3>
+        <p>The total loss combines three objectives weighted by hyperparameters $\lambda$:</p>
+        <div class="equation-box highlight-eq">
+          $$\mathcal{L}_{\text{det}} = \lambda_{\text{box}} \mathcal{L}_{\text{CIoU}} + \lambda_{\text{obj}} \mathcal{L}_{\text{obj}} + \lambda_{\text{cls}} \mathcal{L}_{\text{cls}}$$
+        </div>
+        <div class="loss-breakdown">
+          <div class="loss-card">
+            <div class="loss-icon">📦</div>
+            <h4>CIoU Loss</h4>
+            <div class="loss-eq">$\mathcal{L}_{\text{CIoU}} = 1 - \text{IoU} + \frac{\rho^2(\mathbf{b}, \hat{\mathbf{b}})}{c^2} + \alpha v$</div>
+            <p>Box location & shape accuracy</p>
+          </div>
+          <div class="loss-card">
+            <div class="loss-icon">🎯</div>
+            <h4>Objectness Loss</h4>
+            <div class="loss-eq">$\mathcal{L}_{\text{obj}}$</div>
+            <p>"Is there an object here?"</p>
+          </div>
+          <div class="loss-card">
+            <div class="loss-icon">🏷️</div>
+            <h4>Classification Loss</h4>
+            <div class="loss-eq">$\mathcal{L}_{\text{cls}}$</div>
+            <p>"What type of region is this?"</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Crop Extraction -->
+      <div class="theory-block fade-in">
+        <h3>Bounding-Box Crop Extraction</h3>
+        <p>Given normalised prediction $(\hat{x}_c, \hat{y}_c, \hat{w}, \hat{h})$ and image dimensions $(W, H)$:</p>
+        <div class="equation-box">
+          $$x_{\min} = \lfloor (\hat{x}_c - \hat{w}/2) \cdot W \rfloor \qquad x_{\max} = \lfloor (\hat{x}_c + \hat{w}/2) \cdot W \rfloor$$
+          $$y_{\min} = \lfloor (\hat{y}_c - \hat{h}/2) \cdot H \rfloor \qquad y_{\max} = \lfloor (\hat{y}_c + \hat{h}/2) \cdot H \rfloor$$
+        </div>
+        <div class="equation-box">
+          $$\mathbf{R} = \mathbf{I}\bigl[y_{\min}:y_{\max},\; x_{\min}:x_{\max},\; :\bigr]$$
+        </div>
+      </div>
+
+      <!-- IoU Interactive -->
+      <div class="iou-viz fade-in" id="iou-viz">
+        <h3 class="viz-title">Interactive: IoU Visualisation</h3>
+        <p class="viz-desc">Drag the predicted box (dashed) to see how IoU changes</p>
+        <div class="iou-container">
+          <canvas id="iou-canvas" width="500" height="350"></canvas>
+          <div class="iou-readout">
+            <div class="iou-value" id="iou-value">IoU = 0.72</div>
+            <div class="iou-bar-container">
+              <div class="iou-bar" id="iou-bar" style="width:72%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ SECTION 4: CRNN ═══════════════════ -->
+  <section id="crnn" class="section section-dark">
+    <div class="section-header">
+      <span class="section-number">04</span>
+      <h2>CRNN Architecture</h2>
+      <p class="section-lead">From 2D image crops to 1D character sequences</p>
+    </div>
+    <div class="content-container">
+      <div class="theory-block fade-in">
+        <p>Once a text region $\mathbf{R} \in \mathbb{R}^{h \times w \times 3}$ is cropped, it must be transcribed into a character sequence $\mathbf{l} = (l_1, l_2, \ldots, l_S)$. The CRNN solves this in <strong>three stages</strong>:</p>
+      </div>
+
+      <!-- CRNN Pipeline Animation -->
+      <div class="crnn-pipeline fade-in" id="crnn-pipeline">
+        <div class="crnn-stage" data-stage="cnn">
+          <div class="stage-header">
+            <span class="stage-num">A</span>
+            <h4>CNN Feature Extraction</h4>
+          </div>
+          <div class="stage-visual">
+            <div class="crop-input" id="crnn-input">
+              <span>H</span>
+              <div class="crop-img">
+                <div class="crop-text">Hello</div>
+              </div>
+              <span>e</span><span>l</span><span>l</span><span>o</span>
+            </div>
+            <div class="stage-arrow">→</div>
+            <div class="feature-cols" id="feature-cols">
+              <!-- Generated by JS -->
+            </div>
+          </div>
+          <div class="stage-eq">
+            $\mathbf{x}_\tau = \mathbf{F}_{\text{ocr}}[1, \tau, :], \quad \tau = 1, 2, \ldots, T$
+          </div>
+        </div>
+
+        <div class="crnn-connector">
+          <svg width="40" height="60"><path d="M20 0 L20 60" stroke="url(#grad1)" stroke-width="2" stroke-dasharray="6,4"/></svg>
+        </div>
+
+        <div class="crnn-stage" data-stage="rnn">
+          <div class="stage-header">
+            <span class="stage-num">B</span>
+            <h4>BiLSTM Encoding</h4>
+          </div>
+          <div class="stage-visual">
+            <div class="bilstm-viz" id="bilstm-viz">
+              <!-- Generated by JS -->
+            </div>
+          </div>
+          <div class="stage-eq">
+            $\mathbf{h}_\tau = \bigl[\overrightarrow{\mathbf{h}}_\tau;\; \overleftarrow{\mathbf{h}}_\tau\bigr]$
+          </div>
+        </div>
+
+        <div class="crnn-connector">
+          <svg width="40" height="60"><path d="M20 0 L20 60" stroke="url(#grad1)" stroke-width="2" stroke-dasharray="6,4"/></svg>
+        </div>
+
+        <div class="crnn-stage" data-stage="ctc">
+          <div class="stage-header">
+            <span class="stage-num">C</span>
+            <h4>CTC Decoder</h4>
+          </div>
+          <div class="stage-visual">
+            <div class="ctc-output-viz" id="ctc-output-preview">
+              <!-- Generated by JS -->
+            </div>
+          </div>
+          <div class="stage-eq">
+            $\mathbf{l}^* = \mathcal{B}\!\left(\arg\max_{\pi_1} y_{\pi_1}^1,\; \ldots,\; \arg\max_{\pi_T} y_{\pi_T}^T\right)$
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ SECTION 5: LSTM GATES ═══════════════════ -->
+  <section id="lstm" class="section">
+    <div class="section-header">
+      <span class="section-number">05</span>
+      <h2>LSTM Gate Mechanics</h2>
+      <p class="section-lead">How memory flows through the hidden state transition $\mathbf{h}_\tau \to \mathbf{h}_{\tau+1}$</p>
+    </div>
+    <div class="content-container">
+      <!-- Interactive LSTM Cell -->
+      <div class="lstm-viz fade-in" id="lstm-viz">
+        <h3 class="viz-title">Interactive: LSTM Cell</h3>
+        <p class="viz-desc">Click each gate to see its equation, role, and animation</p>
+        <div class="lstm-container">
+          <div class="lstm-cell" id="lstm-cell">
+            <canvas id="lstm-canvas" width="700" height="450"></canvas>
+          </div>
+          <div class="lstm-info-panel" id="lstm-info">
+            <div class="gate-info" id="gate-info">
+              <h4 id="gate-title">Select a Gate</h4>
+              <div class="gate-equation" id="gate-equation">
+                Click on any gate in the diagram to explore its function.
+              </div>
+              <p id="gate-description">The LSTM cell uses four gates to control information flow through the cell state and hidden state.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Gate Equations Grid -->
+      <div class="gates-grid fade-in">
+        <div class="gate-card" data-gate="forget">
+          <div class="gate-header forget-color">
+            <span class="gate-symbol">f</span>
+            Forget Gate
+          </div>
+          <div class="gate-body">
+            <div class="gate-eq">$\mathbf{f}_\tau = \sigma\bigl(\mathbf{W}_f [\mathbf{h}_{\tau-1}; \mathbf{x}_\tau] + \mathbf{b}_f\bigr)$</div>
+            <p>Decides what to <strong>discard</strong> from the cell state. Outputs values in $[0,1]$: 0 = completely forget, 1 = fully retain.</p>
+          </div>
+        </div>
+
+        <div class="gate-card" data-gate="input">
+          <div class="gate-header input-color">
+            <span class="gate-symbol">i</span>
+            Input Gate
+          </div>
+          <div class="gate-body">
+            <div class="gate-eq">$\mathbf{i}_\tau = \sigma\bigl(\mathbf{W}_i [\mathbf{h}_{\tau-1}; \mathbf{x}_\tau] + \mathbf{b}_i\bigr)$</div>
+            <p>Decides what new information to <strong>store</strong> in the cell state from the candidate values.</p>
+          </div>
+        </div>
+
+        <div class="gate-card" data-gate="cell">
+          <div class="gate-header cell-color">
+            <span class="gate-symbol">c̃</span>
+            Cell Candidate
+          </div>
+          <div class="gate-body">
+            <div class="gate-eq">$\tilde{\mathbf{c}}_\tau = \tanh\bigl(\mathbf{W}_c [\mathbf{h}_{\tau-1}; \mathbf{x}_\tau] + \mathbf{b}_c\bigr)$</div>
+            <p>Creates <strong>candidate values</strong> that could be added to the cell state. Values in $[-1, 1]$.</p>
+          </div>
+        </div>
+
+        <div class="gate-card" data-gate="output">
+          <div class="gate-header output-color">
+            <span class="gate-symbol">o</span>
+            Output Gate
+          </div>
+          <div class="gate-body">
+            <div class="gate-eq">$\mathbf{o}_\tau = \sigma\bigl(\mathbf{W}_o [\mathbf{h}_{\tau-1}; \mathbf{x}_\tau] + \mathbf{b}_o\bigr)$</div>
+            <p>Decides what to <strong>output</strong> as the hidden state, based on the filtered cell state.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cell State Update -->
+      <div class="theory-block fade-in">
+        <h3>Cell State Update</h3>
+        <p>The cell state is the <em>memory highway</em> — it carries long-range information with minimal degradation:</p>
+        <div class="equation-box highlight-eq">
+          $$\mathbf{c}_\tau = \underbrace{\mathbf{f}_\tau \odot \mathbf{c}_{\tau-1}}_{\text{what to keep}} + \underbrace{\mathbf{i}_\tau \odot \tilde{\mathbf{c}}_\tau}_{\text{what to add}}$$
+        </div>
+
+        <h3>Hidden State Output</h3>
+        <p>The hidden state is the <em>filtered view</em> of the cell state:</p>
+        <div class="equation-box highlight-eq">
+          $$\overrightarrow{\mathbf{h}}_{\tau} = \mathbf{o}_\tau \odot \tanh(\mathbf{c}_\tau)$$
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ SECTION 6: CTC LOSS ═══════════════════ -->
+  <section id="ctc" class="section section-dark">
+    <div class="section-header">
+      <span class="section-number">06</span>
+      <h2>CTC Loss</h2>
+      <p class="section-lead">Connectionist Temporal Classification — solving the alignment problem</p>
+    </div>
+    <div class="content-container">
+      <!-- The Alignment Problem -->
+      <div class="theory-block fade-in">
+        <h3>The Alignment Problem</h3>
+        <p>The model produces $T$ time-step outputs, but the target label $\mathbf{l}$ has $S \leq T$ characters. <strong>How do we know which output corresponds to which character?</strong></p>
+        <div class="alignment-demo" id="alignment-demo">
+          <div class="align-row">
+            <div class="align-label">RNN outputs (T=10):</div>
+            <div class="align-cells" id="align-outputs">
+              <!-- Generated by JS -->
+            </div>
+          </div>
+          <div class="align-arrows" id="align-arrows">
+            <!-- Generated by JS -->
+          </div>
+          <div class="align-row">
+            <div class="align-label">Target "cat" (S=3):</div>
+            <div class="align-cells target-cells" id="align-targets">
+              <div class="align-cell target">c</div>
+              <div class="align-cell target">a</div>
+              <div class="align-cell target">t</div>
+            </div>
+          </div>
+        </div>
+        <p class="align-note">CTC solves this by introducing a <strong>blank token</strong> $\epsilon$ and marginalising over <strong>all valid alignments</strong>.</p>
+      </div>
+
+      <!-- CTC Mapping -->
+      <div class="theory-block fade-in">
+        <h3>The Many-to-One Mapping $\mathcal{B}$</h3>
+        <p>Define $\Sigma' = \Sigma \cup \{\epsilon\}$. The mapping $\mathcal{B}$ first removes repeated characters, then strips blanks:</p>
+        <div class="mapping-demo" id="mapping-demo">
+          <div class="mapping-step">
+            <div class="mapping-label">Path π:</div>
+            <div class="mapping-cells" id="mapping-input">
+              <!-- Generated by JS -->
+            </div>
+          </div>
+          <div class="mapping-arrow">↓ remove repeats</div>
+          <div class="mapping-step">
+            <div class="mapping-label">After dedup:</div>
+            <div class="mapping-cells" id="mapping-dedup">
+              <!-- Generated by JS -->
+            </div>
+          </div>
+          <div class="mapping-arrow">↓ remove ε</div>
+          <div class="mapping-step">
+            <div class="mapping-label">$\mathcal{B}(\boldsymbol{\pi})$:</div>
+            <div class="mapping-cells result-cells" id="mapping-result">
+              <!-- Generated by JS -->
+            </div>
+          </div>
+        </div>
+        <div class="mapping-controls">
+          <button class="btn btn-small" id="mapping-prev">← Previous Path</button>
+          <span id="mapping-counter">Path 1 / 4</span>
+          <button class="btn btn-small" id="mapping-next">Next Path →</button>
+        </div>
+      </div>
+
+      <!-- CTC Probability -->
+      <div class="theory-block fade-in">
+        <h3>CTC Probability & Loss</h3>
+        <p>The probability of a path, assuming independence between time-steps:</p>
+        <div class="equation-box">
+          $$P(\boldsymbol{\pi} \mid \mathbf{I}) = \prod_{\tau=1}^{T} y_{\pi_\tau}^\tau$$
+        </div>
+
+        <p>Marginalise over all valid alignments to get the label probability:</p>
+        <div class="equation-box highlight-eq ctc-main-eq">
+          $$P(\mathbf{l} \mid \mathbf{I}) = \sum_{\boldsymbol{\pi} \in \mathcal{B}^{-1}(\mathbf{l})} \prod_{\tau=1}^{T} y_{\pi_\tau}^\tau$$
+        </div>
+
+        <p>The CTC loss minimises negative log-probability:</p>
+        <div class="equation-box highlight-eq ctc-loss-eq">
+          $$\boxed{\mathcal{L}_{\text{CTC}} = -\ln P(\mathbf{l} \mid \mathbf{I}) = -\ln \sum_{\boldsymbol{\pi} \in \mathcal{B}^{-1}(\mathbf{l})} \prod_{\tau=1}^{T} y_{\pi_\tau}^\tau}$$
+        </div>
+      </div>
+
+      <!-- CTC Lattice Interactive -->
+      <div class="lattice-viz fade-in" id="lattice-viz">
+        <h3 class="viz-title">Interactive: CTC Forward Lattice</h3>
+        <p class="viz-desc">Hover over cells to see the forward variable $\alpha_\tau(s)$ computation. The lattice computes $P(\mathbf{l} \mid \mathbf{I})$ in $\mathcal{O}(T \cdot |\mathbf{l}'|)$ time.</p>
+        <div class="lattice-container">
+          <canvas id="lattice-canvas" width="700" height="400"></canvas>
+          <div class="lattice-info" id="lattice-info">
+            <div class="lattice-eq" id="lattice-eq">
+              $$\alpha_\tau(s) = \sum_{\substack{\boldsymbol{\pi}_{1:\tau} \\ \mathcal{B}(\boldsymbol{\pi}_{1:\tau}) = \mathbf{l}'_{1:s}}} \prod_{t=1}^{\tau} y_{\pi_t}^t$$
+            </div>
+            <p id="lattice-desc">The forward variable accumulates path probabilities using dynamic programming. Hover over lattice cells to explore.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Greedy Decoding -->
+      <div class="theory-block fade-in">
+        <h3>Greedy Decoding</h3>
+        <p>At inference, select the most probable symbol at each time-step:</p>
+        <div class="equation-box">
+          $$\mathbf{l}^* \approx \mathcal{B}\!\left(\arg\max_{\pi_1} y_{\pi_1}^1,\; \arg\max_{\pi_2} y_{\pi_2}^2,\; \ldots,\; \arg\max_{\pi_T} y_{\pi_T}^T\right)$$
+        </div>
+        <div class="decoding-demo" id="decoding-demo">
+          <div class="decode-row" id="decode-bars">
+            <!-- Generated by JS: probability bars for each timestep -->
+          </div>
+          <div class="decode-row" id="decode-result">
+            <!-- Generated by JS: greedy decode result -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ SECTION 7: FULL PIPELINE ═══════════════════ -->
+  <section id="pipeline" class="section">
+    <div class="section-header">
+      <span class="section-number">07</span>
+      <h2>The Full Pipeline</h2>
+      <p class="section-lead">From raw whiteboard photo to structured Markdown</p>
+    </div>
+    <div class="content-container">
+      <div class="pipeline-flow fade-in" id="pipeline-flow">
+        <div class="pipe-stage" data-pipe="ingest">
+          <div class="pipe-icon">📷</div>
+          <h4>Ingestion</h4>
+          <p class="pipe-file">OpenCV</p>
+          <div class="pipe-data">$\mathbf{I} \in \mathbb{R}^{H \times W \times 3}$</div>
+        </div>
+        <div class="pipe-arrow">
+          <svg width="60" height="24"><path d="M0 12 L50 12 M42 5 L50 12 L42 19" stroke="currentColor" fill="none" stroke-width="2"/></svg>
+        </div>
+        <div class="pipe-stage" data-pipe="detect">
+          <div class="pipe-icon">🔍</div>
+          <h4>Region Detection</h4>
+          <p class="pipe-file">YOLOv8-nano</p>
+          <div class="pipe-data">CroppedRegion[]</div>
+        </div>
+        <div class="pipe-arrow">
+          <svg width="60" height="24"><path d="M0 12 L50 12 M42 5 L50 12 L42 19" stroke="currentColor" fill="none" stroke-width="2"/></svg>
+        </div>
+        <div class="pipe-stage" data-pipe="transcribe">
+          <div class="pipe-icon">✍️</div>
+          <h4>OCR Transcription</h4>
+          <p class="pipe-file">PP-OCRv3 (CRNN + CTC)</p>
+          <div class="pipe-data">TranscriptionResult[]</div>
+        </div>
+        <div class="pipe-arrow">
+          <svg width="60" height="24"><path d="M0 12 L50 12 M42 5 L50 12 L42 19" stroke="currentColor" fill="none" stroke-width="2"/></svg>
+        </div>
+        <div class="pipe-stage" data-pipe="assemble">
+          <div class="pipe-icon">📋</div>
+          <h4>Markdown Assembly</h4>
+          <p class="pipe-file">pipeline_orchestrator.py</p>
+          <div class="pipe-data">output.md</div>
+        </div>
+      </div>
+
+      <!-- Code modules -->
+      <div class="modules-grid fade-in">
+        <div class="module-card">
+          <div class="module-header">
+            <span class="module-badge">Module 1</span>
+            <code>data_prep.py</code>
+          </div>
+          <p>Generates synthetic whiteboard images. Converts COCO $[x_{\min}, y_{\min}, w, h]$ → YOLO $[x_c, y_c, w_n, h_n]$.</p>
+          <div class="module-owner">Team Member A</div>
+        </div>
+        <div class="module-card">
+          <div class="module-header">
+            <span class="module-badge">Module 2</span>
+            <code>layout_detector.py</code>
+          </div>
+          <p>YOLOv8-nano inference → bounding-box crop extraction → sorted CroppedRegion list for whiteboard regions.</p>
+          <div class="module-owner">Team Member B</div>
+        </div>
+        <div class="module-card">
+          <div class="module-header">
+            <span class="module-badge">Module 3</span>
+            <code>sequence_transcriber.py</code>
+          </div>
+          <p>PP-OCRv3 recognition → CTC-decoded handwriting with whiteboard-specific preprocessing (CLAHE, deskew).</p>
+          <div class="module-owner">Team Member C</div>
+        </div>
+        <div class="module-card">
+          <div class="module-header">
+            <span class="module-badge">Module 4</span>
+            <code>pipeline_orchestrator.py</code>
+          </div>
+          <p>Chains all stages. CLI entry point producing structured Markdown output.</p>
+          <div class="module-owner">Team Member D</div>
+        </div>
+      </div>
+
+      <!-- Flow equation -->
+      <div class="theory-block fade-in">
+        <h3>Mathematical Data Flow</h3>
+        <div class="equation-box">
+          $$\text{Photo} \xrightarrow{\text{OpenCV}} \mathbf{I} \xrightarrow{\text{YOLOv8}} \{\mathbf{R}_i\}_{i=1}^{N} \xrightarrow{\text{PP-OCRv3}} \{(\text{text}_i, \text{conf}_i)\}_{i=1}^{N} \xrightarrow{\text{format}} \text{Markdown}$$
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ FOOTER ═══════════════════ -->
+  <footer id="footer">
+    <div class="footer-content">
+      <div class="footer-title">Whiteboard Theory Explorer</div>
+      <p>42.515 Machine Learning and Analytics — Spring 2026</p>
+      <p class="footer-sub">YOLOv8 · PP-OCRv3 · CRNN · CTC Loss · Handwriting Digitisation</p>
+    </div>
+  </footer>
+
+  <!-- SVG Defs (shared gradients) -->
+  <svg width="0" height="0" style="position:absolute">
+    <defs>
+      <linearGradient id="grad1" x1="0%" y1="0%" x2="0%" y2="100%">
+        <stop offset="0%" style="stop-color:#6366f1;stop-opacity:1" />
+        <stop offset="100%" style="stop-color:#a855f7;stop-opacity:1" />
+      </linearGradient>
+    </defs>
+  </svg>
+
+  <script src="script.js"></script>
+</body>
+</html>
