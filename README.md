@@ -1,6 +1,6 @@
-# Whiteboard Digitizer (Antigravity ML Pipeline)
+# Whiteboard Digitizer
 
-This repository contains the Machine Learning pipeline (YOLOv8 & PP-OCRv3) to parse and digitize whiteboard photographs into structured Markdown files. It has been structured specifically to support **Antigravity AI Agents**.
+This repository contains the Machine Learning pipeline (YOLOv8 & PP-OCRv3) to parse and digitize whiteboard photographs into structured Markdown files.
 
 ## 🚀 Quick Start for Team Members
 

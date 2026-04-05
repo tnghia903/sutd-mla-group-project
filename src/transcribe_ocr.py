@@ -74,7 +74,7 @@ class OCREngine:
         self._engine = None
         self._backend: str = "none"
         self._lang = lang
-        self._use_gpu = use_gpu
+        self._device = "gpu" if use_gpu else "cpu"
         self._initialise()
 
     # --- Private initialiser with fallback chain ---
@@ -83,10 +83,9 @@ class OCREngine:
         try:
             from paddleocr import PaddleOCR
             self._engine = PaddleOCR(
-                use_angle_cls=True,
+                use_textline_orientation=True,
                 lang=self._lang,
-                use_gpu=self._use_gpu,
-                show_log=False,
+                device=self._device,
             )
             self._backend = "paddleocr"
             print("[INFO] OCR backend: PaddleOCR (PP-OCRv3)")
@@ -98,7 +97,7 @@ class OCREngine:
         try:
             import easyocr
             self._engine = easyocr.Reader(
-                [self._lang], gpu=self._use_gpu, verbose=False
+                [self._lang], gpu=(self._device == "gpu"), verbose=False
             )
             self._backend = "easyocr"
             print("[INFO] OCR backend: EasyOCR")
@@ -145,21 +144,21 @@ class OCREngine:
     def _recognise_paddle(self, crop: np.ndarray) -> tuple[str, float]:
         # PaddleOCR expects BGR
         bgr = cv2.cvtColor(crop, cv2.COLOR_RGB2BGR)
-        result = self._engine.ocr(bgr, cls=True)
+        results = self._engine.predict(bgr)
 
-        if not result or result[0] is None:
+        if not results:
             return ("", 0.0)
 
-        lines = []
-        confidences = []
-        for line in result[0]:
-            text = line[1][0]
-            conf = line[1][1]
-            lines.append(text)
-            confidences.append(conf)
+        # PaddleOCR 3.4+ returns list[OCRResult] with rec_texts/rec_scores
+        item = results[0]
+        texts = item.get("rec_texts", [])
+        scores = item.get("rec_scores", [])
 
-        full_text = "\n".join(lines)
-        avg_conf  = sum(confidences) / len(confidences) if confidences else 0.0
+        if not texts:
+            return ("", 0.0)
+
+        full_text = "\n".join(texts)
+        avg_conf  = sum(scores) / len(scores) if scores else 0.0
         return (full_text, avg_conf)
 
     # ---- EasyOCR ----
