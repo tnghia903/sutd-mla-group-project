@@ -1,4 +1,3 @@
-% !TEX root = report.tex
 \documentclass[11pt, a4paper]{article}
 
 % ══════════════════════════════════════════════════════════════
@@ -42,6 +41,7 @@
 \newcommand{\Loss}{\mathcal{L}}
 \newcommand{\blank}{\text{blank}}
 \newcommand{\Reals}{\mathbb{R}}
+\DeclareMathOperator*{\argmax}{arg\,max}
 
 % ══════════════════════════════════════════════════════════════
 % TITLE BLOCK
@@ -67,8 +67,9 @@
 \begin{document}
 \maketitle
 \begin{abstract}
-This report presents a modular machine-learning pipeline for \textbf{handwritten whiteboard digitisation} that decouples spatial region detection from sequential text recognition. The system employs a YOLOv8-nano single-shot object detector to localise semantic regions (Handwriting, Diagram, Arrow, Equation, Sticky Note) in whiteboard photographs, followed by a PP-OCRv3 recogniser grounded in the CRNN architecture with Connectionist Temporal Classification (CTC) loss to transcribe handwritten content. We formalise the theoretical underpinnings of both the spatial detection and sequential recognition stages, demonstrate the end-to-end pipeline on synthetic whiteboard images, and discuss the architectural advantages of treating whiteboard digitisation as a two-stage spatial-then-sequential problem rather than a monolithic model.
+This report presents a modular machine-learning pipeline for \textbf{handwritten whiteboard digitisation} that decouples spatial region detection from sequential text recognition. The system employs a YOLOv8-nano single-shot object detector to localise semantic regions (Handwriting, Diagram, Arrow, Equation, Sticky Note) in whiteboard photographs, followed by a PP-OCRv3 recogniser grounded in the CRNN architecture with Connectionist Temporal Classification (CTC) loss to transcribe handwritten content. We formalise the theoretical underpinnings of both the spatial detection and sequential recognition stages, demonstrate the end-to-end pipeline on synthetic whiteboard images, and discuss the architectural advantages of treating whiteboard digitisation as a two-stage spatial-sequential problem rather than a monolithic model.
 \end{abstract}
+\newpage
 
 \tableofcontents
 \newpage
@@ -126,6 +127,143 @@ By decoupling spatial detection from text recognition, our pipeline leverages th
 \end{itemize}
 
 This separation-of-concerns principle means each module can be independently developed, evaluated, and upgraded—a critical advantage for asynchronous team collaboration.
+
+\section{Motivation}
+Consider an expense-management workflow where employees submit mobile photos of receipts. The images are often noisy: text may be skewed, partially occluded, low contrast, or motion blurred. Vendor names can use stylized fonts, and currency/date formats vary by region.
+
+Without OCR, every receipt must be keyed in manually, creating delay and human error. With OCR, organizations can automatically extract fields such as merchant, date, and total amount, then route results into accounting systems. The engineering challenge is that recognition quality depends not only on character classification accuracy but also on detection quality, sequence alignment, and linguistic plausibility.
+
+This mix of high business impact and real-world noise explains why OCR remains both economically valuable and technically interesting.
+
+\section{Theory}
+This section explains a canonical OCR pipeline:
+\[
+\text{Image} \rightarrow \text{Preprocessing} \rightarrow \text{Text Detection} \rightarrow \text{Sequence Recognition} \rightarrow \text{Decoding}.
+\]
+
+\subsection{Pipeline Components}
+\textbf{Preprocessing:} geometric correction (deskewing), denoising, and contrast normalization improve downstream feature quality.
+
+\textbf{Text Detection:} a detector proposes text regions (lines/words) from the page or scene \cite{liao2020db}.
+
+\textbf{Sequence Recognition:} a recognizer maps each cropped text region to a sequence of character probabilities over time steps.
+
+\textbf{Decoding with Language Constraints:} final text is selected by combining visual likelihood and language priors.
+
+\subsection{Text Detection in More Detail}
+Text detection identifies where text appears before recognition runs. In OCR for documents, detectors often predict word- or line-level boxes. In scene text, detectors may need rotated rectangles or polygons because text can be slanted or curved.
+
+\textbf{Typical detection pipeline:}
+\begin{enumerate}[leftmargin=*]
+    \item Extract visual features with a CNN backbone.
+    \item Predict candidate text regions and confidence scores.
+    \item Filter low-confidence regions.
+    \item Apply non-maximum suppression (NMS) to remove duplicates.
+    \item Pass the final boxes to the recognizer as cropped regions.
+\end{enumerate}
+
+\textbf{Box overlap and IoU:} Detection quality is commonly measured using Intersection over Union (IoU) between predicted region $B_p$ and ground-truth region $B_g$:
+\[
+\mathrm{IoU}(B_p,B_g)=\frac{|B_p \cap B_g|}{|B_p \cup B_g|}.
+\]
+A prediction is counted as a true positive if IoU is above a threshold (for example, 0.5) and the class/confidence constraints are met. Higher thresholds are stricter and penalize poor localization.
+
+\textbf{NMS:} Multiple nearby predictions often correspond to the same text instance. NMS sorts boxes by confidence, keeps the highest-scoring box, and suppresses lower-scoring boxes with overlap above an NMS threshold. This improves precision by reducing duplicate detections.
+
+\textbf{Training objective (conceptual):} Many text detectors optimize a joint loss with a classification term and a localization term:
+\[
+\mathcal{L}_{\text{det}}=\mathcal{L}_{\text{cls}}+\alpha \mathcal{L}_{\text{loc}},
+\]
+where $\mathcal{L}_{\text{cls}}$ learns text vs non-text confidence, and $\mathcal{L}_{\text{loc}}$ learns accurate box geometry (center, width/height, angle, or polygon vertices).
+
+\textbf{Detection metrics:} Precision and recall for text detection are:
+\[
+\mathrm{Precision}=\frac{TP}{TP+FP}, \qquad
+\mathrm{Recall}=\frac{TP}{TP+FN},
+\]
+and the harmonic mean (F1-score) is:
+\[
+F_1 = \frac{2 \cdot \mathrm{Precision}\cdot \mathrm{Recall}}{\mathrm{Precision}+\mathrm{Recall}}.
+\]
+In practice, OCR errors can originate from weak detection even if the recognizer is strong, so detector quality is a major bottleneck.
+
+\subsection{Visual Encoding and Sequence Probabilities}
+Let input image crop be $X$. A feature extractor (typically CNN-based) produces a sequence of feature vectors:
+\[
+H = f_{\theta}(X) = (h_1, h_2, \ldots, h_T).
+\]
+A sequence model predicts a distribution over character vocabulary $\mathcal{V}$ plus a blank symbol at each step:
+\[
+P(\pi_t \mid X), \quad \pi_t \in \mathcal{V} \cup \{\varnothing\}, \quad t=1,\ldots,T.
+\]
+
+\subsection{CRNN in More Detail}
+A common recognizer is the Convolutional Recurrent Neural Network (CRNN), which combines CNN-based visual feature extraction with sequence modeling \cite{shi2016crnn}. The key idea is to avoid explicit character segmentation and instead learn a direct mapping from an entire word/line image to a character sequence.
+
+\textbf{CNN stage:} The input text image is transformed into a 2D feature map. Pooling and convolution progressively increase receptive field size so each local descriptor encodes richer context than raw pixels.
+
+\textbf{Sequence conversion:} The feature map is read column-wise (or along width) to form a sequence of feature vectors. If the map has width $T$, the recognizer gets $T$ time steps. This naturally supports variable-length text because $T$ depends on image width.
+
+\textbf{Recurrent stage:} A bidirectional recurrent encoder (often BiLSTM) models dependencies from both left-to-right and right-to-left directions:
+\[
+\overrightarrow{s_t} = \mathrm{RNN}_f(h_t,\overrightarrow{s_{t-1}}), \qquad
+\overleftarrow{s_t} = \mathrm{RNN}_b(h_t,\overleftarrow{s_{t+1}}),
+\]
+\[
+s_t = [\overrightarrow{s_t};\overleftarrow{s_t}].
+\]
+The concatenated state $s_t$ captures local appearance and neighboring character context, which is useful for ambiguous glyphs (for example, distinguishing ``O'' vs ``0'' from context).
+
+\textbf{Prediction head:} A linear layer plus softmax maps each $s_t$ to character probabilities:
+\[
+P(\pi_t=k\mid X)=\mathrm{softmax}(Ws_t+b)_k.
+\]
+The resulting per-step distributions are trained with CTC loss, enabling alignment-free supervision.
+
+\subsection{CTC Objective}
+In OCR, alignment between time steps and target characters is usually unknown. Connectionist Temporal Classification (CTC) handles this by summing probabilities over all valid alignment paths \cite{graves2006ctc}. For a target string $y$, define $\mathcal{B}^{-1}(y)$ as all paths that collapse to $y$ after removing blanks and repeated symbols. Then:
+\[
+P(y \mid X) = \sum_{\pi \in \mathcal{B}^{-1}(y)} \prod_{t=1}^{T} P(\pi_t \mid X),
+\]
+and the training loss is:
+\[
+\mathcal{L}_{\text{CTC}} = -\log P(y \mid X).
+\]
+This allows end-to-end learning without character-level alignment labels.
+
+\subsection{CTC Alignment Intuition and Example}
+CTC introduces a blank token $\varnothing$ and a collapse operation $\mathcal{B}$:
+\begin{enumerate}[leftmargin=*]
+    \item Merge repeated consecutive symbols.
+    \item Remove blank symbols.
+\end{enumerate}
+For example, both paths below can map to the same word ``CAT'':
+\[
+(\text{C},\varnothing,\text{A},\text{T},\varnothing) \xrightarrow{\mathcal{B}} \text{CAT},
+\]
+\[
+(\text{C},\text{C},\varnothing,\text{A},\text{T}) \xrightarrow{\mathcal{B}} \text{CAT}.
+\]
+Training sums the probability mass of all valid paths, so the model is not forced to choose one exact frame-level alignment early in learning. In practice, this stabilizes training for OCR because character boundaries are often fuzzy (blurred edges, kerning differences, and perspective distortion).
+
+Directly summing all paths is combinatorial, so CTC is computed efficiently with dynamic programming (forward-backward recursion). A practical implication is that the model learns both \emph{what} characters appear and \emph{when} to emit them over the time axis.
+
+\subsection{Decoding}
+At inference, greedy decoding takes the most likely symbol per time step and collapses repeats/blanks. Beam search usually performs better by exploring multiple candidates and optionally using a language model (LM) \cite{shi2016crnn,shi2017aster}:
+\[
+\hat{y} = \arg\max_{y} \left[\log P_{\text{CTC}}(y \mid X) + \lambda \log P_{\text{LM}}(y) + \beta |y|\right],
+\]
+where $\lambda$ controls LM influence and $\beta$ can regularize sequence length.
+
+\subsection{Compact System Diagram}
+\begin{center}
+\fbox{
+\begin{minipage}{0.93\linewidth}
+\centering
+Input Image $\rightarrow$ Preprocessing $\rightarrow$ Detector $\rightarrow$ Crop/Line Features $\rightarrow$ Recognizer (CNN+Sequence Model) $\rightarrow$ CTC/Attention Decoding $\rightarrow$ Output Text
+\end{minipage}
+}
+\end{center}
 
 
 % ══════════════════════════════════════════════════════════════
@@ -311,59 +449,11 @@ At inference time, the most probable label is obtained via:
 The right-hand side is the \emph{greedy decoding} approximation, which selects the most probable symbol at each time-step independently. While not globally optimal, it is computationally efficient and works well in practice when combined with a sufficiently expressive BiLSTM encoder.
 
 
-% ══════════════════════════════════════════════════════════════
-% SECTION 4: PACKAGES REQUIRED
-% ══════════════════════════════════════════════════════════════
-\section{Packages Required}\label{sec:packages}
-
-Table~\ref{tab:packages} enumerates the core libraries used in our pipeline, their roles, and the pipeline stage to which they belong.
-
-\begin{table}[H]
-\centering
-\caption{Software dependencies of the whiteboard digitisation pipeline.}
-\label{tab:packages}
-\begin{tabular}{@{}llll@{}}
-\toprule
-\textbf{Package} & \textbf{Version} & \textbf{Role} & \textbf{Stage} \\
-\midrule
-\texttt{ultralytics}  & $\geq 8.0$  & YOLOv8 model loading, training, and inference & Detection \\
-\texttt{paddleocr}     & $\geq 2.7$  & PP-OCRv3 text detection and recognition       & Transcription \\
-\texttt{paddlepaddle}  & $\geq 2.5$  & PaddlePaddle deep-learning framework           & Transcription \\
-\texttt{torch}         & $\geq 2.0$  & PyTorch backend for YOLOv8                    & Detection \\
-\texttt{torchvision}   & $\geq 0.15$ & Image transforms and pre-trained backbones     & Detection \\
-\texttt{opencv-python} & $\geq 4.8$  & Image I/O, colour-space conversion, CLAHE      & All stages \\
-\texttt{numpy}         & $\geq 1.24$ & Tensor manipulation and array operations       & All stages \\
-\texttt{Pillow}        & $\geq 10.0$ & Image creation and format conversion           & Data prep \\
-\bottomrule
-\end{tabular}
-\end{table}
-
 
 % ══════════════════════════════════════════════════════════════
 % SECTION 5: APPLICATION
 % ══════════════════════════════════════════════════════════════
 \section{Application}\label{sec:application}
-
-\subsection{Standalone Model vs.\ ML Pipeline}
-
-A \emph{standalone ML model} is a single trained network that receives raw input and produces a final prediction. In contrast, an \emph{ML pipeline} is a \textbf{directed acyclic graph (DAG)} of heterogeneous processing stages, each performing a specialised transformation on the data. Table~\ref{tab:model_vs_pipeline} contrasts the two paradigms.
-
-\begin{table}[H]
-\centering
-\caption{Standalone model versus ML pipeline comparison.}
-\label{tab:model_vs_pipeline}
-\begin{tabular}{@{}lll@{}}
-\toprule
-\textbf{Dimension} & \textbf{Standalone Model} & \textbf{ML Pipeline} \\
-\midrule
-Architecture     & Single forward pass       & Multi-stage DAG \\
-Modularity       & Monolithic                & Composable, replaceable stages \\
-Error isolation  & End-to-end backprop       & Per-stage debugging \\
-Team scalability & Single developer          & Parallel development \\
-Reusability      & Task-specific             & Stages reusable across tasks \\
-\bottomrule
-\end{tabular}
-\end{table}
 
 \subsection{Pipeline Architecture: Four-Module Walkthrough}
 
@@ -431,6 +521,61 @@ The execution flow is:
   &\texttt{Transcription:} \quad \bigl\{\texttt{CroppedRegion}_i\bigr\} \xrightarrow{\text{PP-OCRv3}} \bigl\{\texttt{TranscriptionResult}_i\bigr\}_{i=1}^{N} \\
   &\texttt{Assembly:} \quad \bigl\{\texttt{TranscriptionResult}_i\bigr\} \xrightarrow{\text{Markdown}} \texttt{output.md}
 \end{align*}
+
+\section{Context}
+\subsection{Precedent Topics}
+OCR builds on earlier ideas in image processing and pattern recognition. Historically, systems used hand-crafted features and template matching, often with explicit segmentation of characters before classification \cite{mori1999ocrsurvey}. Later, statistical sequence models (e.g., Hidden Markov Models) and language modeling improved robustness to ambiguous visual evidence.
+
+With deep learning, representation learning replaced many hand-crafted components. Convolutional neural networks (CNNs) improved visual feature extraction, while recurrent and attention-based sequence models improved recognition from variable-width text images \cite{shi2016crnn,jaderberg2016reading}.
+
+\subsection{Successor Topics}
+Modern OCR is increasingly a subsystem rather than a final task. It feeds into higher-level document intelligence pipelines such as key information extraction, form understanding, legal/medical document analysis, and retrieval-augmented generation over scanned archives. End-to-end document AI models combine text, layout, and visual structure in a multimodal framework.
+
+\subsection{Tangential Topics}
+Related areas include:
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Handwritten Text Recognition (HTR):} stronger variability in stroke style and character formation.
+    \item \textbf{Scene Text Recognition:} perspective distortion, motion blur, and cluttered backgrounds.
+    \item \textbf{Language-aware Correction:} spelling correction and constrained decoding that borrow from NLP.
+\end{itemize}
+
+\subsection{Historical Progression}
+At a high level, OCR has evolved from rule/template-based systems to deep end-to-end recognition \cite{mori1999ocrsurvey,smith2007tesseract,shi2016crnn,baek2019str}:
+\begin{enumerate}[leftmargin=*]
+    \item Character templates and engineered features.
+    \item Statistical sequence models with handcrafted preprocessing.
+    \item CNN-RNN hybrids (e.g., CRNN) and CTC-based training.
+    \item Attention and transformer-based recognizers with stronger language priors.
+\end{enumerate}
+
+\section{Evaluation Snapshot}
+Common OCR metrics include:
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Character Error Rate (CER):} normalized edit distance at character level.
+    \item \textbf{Word Error Rate (WER):} normalized edit distance at word level.
+    \item \textbf{Exact Match Accuracy:} fraction of predictions exactly equal to reference strings.
+\end{itemize}
+
+Let $S$, $D$, and $I$ be substitution, deletion, and insertion counts from edit distance, and let $N$ be reference length. Then:
+\[
+\text{CER} = \frac{S + D + I}{N}.
+\]
+
+\begin{table}[h]
+\centering
+\caption{Typical OCR Evaluation Summary}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Metric & Measures & Typical Use \\
+\midrule
+CER & Character-level errors & General recognition quality \\
+WER & Word-level errors & Readability and downstream parsing \\
+Exact Match & Full-string correctness & Strict field extraction \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Frequently used datasets include IAM (handwriting), ICDAR benchmarks (scene/document text), and large synthetic corpora used for pretraining \cite{baek2019str,li2021trba}.
 
 
 % ══════════════════════════════════════════════════════════════
