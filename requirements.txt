@@ -17,8 +17,11 @@ opencv-python-headless>=4.8
 Pillow>=10.0
 numpy>=1.24
 
-# --- Data Preparation ---
+# --- Data Preparation & Notebook Visualisation ---
 tqdm>=4.65
+roboflow>=1.1
+pandas>=2.0
+matplotlib>=3.7
 
 # --- Optional Fallback OCR ---
 # easyocr>=1.7

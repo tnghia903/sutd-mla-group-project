@@ -249,104 +249,31 @@ def transcribe_regions(
 # 4. WHITEBOARD-SPECIFIC IMAGE PREPROCESSING
 # ---------------------------------------------------------------------------
 
-def _preprocess_whiteboard_crop(
-    crop: np.ndarray,
-    target_height: int = 64,
-) -> np.ndarray:
+def _preprocess_whiteboard_crop(crop: np.ndarray) -> np.ndarray:
     """
-    Whiteboard-optimised preprocessing to improve OCR accuracy:
-        1. Convert to greyscale.
-        2. CLAHE contrast enhancement (handles uneven whiteboard lighting).
-        3. Morphological opening to reduce noise from board texture.
-        4. Adaptive thresholding (Gaussian) to binarise marker strokes.
-        5. Deskew correction for tilted handwriting.
-        6. Resize to a fixed height while preserving aspect ratio.
-        7. Convert back to 3-channel for model compatibility.
+    Whiteboard-optimised preprocessing to improve OCR accuracy.
+
+    Applies CLAHE contrast enhancement on the luminance channel to handle
+    uneven whiteboard lighting and glare from camera capture.  The crop is
+    returned at its original resolution so that PaddleOCR's internal text
+    detector operates at full quality; heavy binarisation and forced rescaling
+    to 64 px were removed because they shrink large crops to unusable sizes.
 
     Parameters:
-        crop:          RGB numpy array from a whiteboard region.
-        target_height: Fixed height for the normalised output.
+        crop: RGB numpy array from a whiteboard region.
 
     Returns:
-        Preprocessed RGB numpy array.
+        Contrast-enhanced RGB numpy array (same spatial dimensions as input).
     """
-    if crop.ndim == 3:
-        grey = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
-    else:
-        grey = crop
+    if crop.size == 0:
+        return crop
 
-    # --- Step 1: CLAHE contrast enhancement ---
+    # CLAHE on the L channel of LAB (preserves colour, boosts local contrast)
+    lab = cv2.cvtColor(crop, cv2.COLOR_RGB2LAB)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    grey = clahe.apply(grey)
+    lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
 
-    # --- Step 2: Morphological opening (reduce board texture noise) ---
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-    grey = cv2.morphologyEx(grey, cv2.MORPH_OPEN, kernel)
-
-    # --- Step 3: Adaptive thresholding for binarisation ---
-    binary = cv2.adaptiveThreshold(
-        grey, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        blockSize=15,
-        C=4,
-    )
-
-    # --- Step 4: Deskew correction ---
-    binary = _deskew(binary)
-
-    # --- Step 5: Resize to target height, preserve aspect ratio ---
-    h, w = binary.shape[:2]
-    if h > 0:
-        scale = target_height / h
-        new_w = max(1, int(w * scale))
-        binary = cv2.resize(binary, (new_w, target_height),
-                            interpolation=cv2.INTER_CUBIC)
-
-    # Back to 3-channel RGB
-    return cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
-
-
-def _deskew(binary_image: np.ndarray, max_angle: float = 15.0) -> np.ndarray:
-    """
-    Correct slight rotation in handwritten text by estimating skew angle
-    from the binarised image using horizontal projection analysis.
-
-    Parameters:
-        binary_image: Binarised (white bg, dark text) numpy array.
-        max_angle:    Maximum correction angle in degrees.
-
-    Returns:
-        Deskewed binary image.
-    """
-    # Find non-zero pixels
-    coords = np.column_stack(np.where(binary_image < 128))
-    if len(coords) < 20:
-        return binary_image  # too few points to estimate angle
-
-    # Fit minimum-area bounding rectangle
-    try:
-        rect = cv2.minAreaRect(coords)
-        angle = rect[-1]
-    except cv2.error:
-        return binary_image
-
-    # Normalise angle to [-max_angle, max_angle]
-    if angle < -45:
-        angle = 90 + angle
-    if abs(angle) > max_angle:
-        return binary_image  # don't correct extreme angles
-
-    # Rotate
-    h, w = binary_image.shape[:2]
-    center = (w // 2, h // 2)
-    M = cv2.getRotationMatrix2D(center, angle, 1.0)
-    rotated = cv2.warpAffine(
-        binary_image, M, (w, h),
-        flags=cv2.INTER_CUBIC,
-        borderMode=cv2.BORDER_REPLICATE,
-    )
-    return rotated
 
 
 # ---------------------------------------------------------------------------

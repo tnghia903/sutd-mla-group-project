@@ -16,6 +16,13 @@ crops/
 markdown/
 detections.png
 
+# YOLO training runs (weights tracked separately if needed)
+runs/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
 # Data directories (for synthetic generation or downloaded data)
 data/images/
 data/labels/

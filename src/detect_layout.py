@@ -40,7 +40,7 @@ import numpy as np
 
 # Default model: YOLOv8-nano pre-trained on COCO
 # For whiteboard-specific fine-tuning, replace with your checkpoint path.
-DEFAULT_MODEL_PATH: str = "yolov8n.pt"
+DEFAULT_MODEL_PATH: str = "runs/detect/whiteboard_mathwriting_v1/weights/best.pt"
 
 # Confidence threshold for keeping detections
 CONF_THRESHOLD: float = 0.25
@@ -247,15 +247,19 @@ if __name__ == "__main__":
     import sys
     import json
 
-    input_path = sys.argv[1] if len(sys.argv) > 1 else "data/images/whiteboard_0001.png"
+    input_path  = sys.argv[1] if len(sys.argv) > 1 else "data/images/whiteboard_0001.png"
+    model_path  = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_MODEL_PATH
 
     # Load whiteboard image
     img = image_file_to_array(input_path)
     img = preprocess_whiteboard(img)
 
     # Detect
-    model   = load_yolo_model()
+    model   = load_yolo_model(model_path)
     regions = run_inference(model, img)
+
+    # Visualisation
+    draw_detections(img, regions, output_path="output/detections.png")
 
     # JSON Output
     output = []
