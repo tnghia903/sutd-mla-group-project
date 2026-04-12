@@ -275,9 +275,230 @@ def _preprocess_whiteboard_crop(crop: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
 
 
+def _preprocess_math_crop(crop: np.ndarray) -> np.ndarray:
+    """
+    Math-specific preprocessing for equation crops before OCR.
+
+    Pipeline:
+        1. Convert to grayscale
+        2. CLAHE contrast enhancement (clipLimit=3.0)
+        3. Otsu binarization only if the image is noisy (stddev > 40)
+        4. Upscale to minimum 320px height (preserves glyph detail)
+        5. Convert back to 3-channel RGB for OCR engines
+
+    Parameters:
+        crop: RGB numpy array from an equation region.
+
+    Returns:
+        Preprocessed RGB numpy array.
+    """
+    if crop.size == 0:
+        return crop
+
+    gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+
+    # CLAHE for low-contrast chalk/marker strokes
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+
+    # Otsu binarization only if noisy
+    if np.std(enhanced) > 40:
+        _, enhanced = cv2.threshold(
+            enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+
+    # Upscale to minimum 320px height
+    h, w = enhanced.shape[:2]
+    if h < 320:
+        scale = 320 / h
+        enhanced = cv2.resize(
+            enhanced, (int(w * scale), 320), interpolation=cv2.INTER_LINEAR
+        )
+
+    return cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB)
+
 
 # ---------------------------------------------------------------------------
-# 5. STANDALONE EXECUTION (DEMO)
+# 5. MATH-SPECIFIC OCR ENGINE (pix2tex -> TrOCR -> PaddleOCR)
+# ---------------------------------------------------------------------------
+
+@dataclasses.dataclass
+class MathTranscriptionResult:
+    """Structured output from the math OCR stage."""
+    region_class: str
+    bbox_xyxy:    tuple[int, int, int, int]
+    latex:        str             # LaTeX string
+    plain_text:   str             # Plain text fallback
+    confidence:   float
+    backend:      str             # Which engine produced the result
+    line_count:   int
+
+
+class MathOCREngine:
+    """
+    Math-aware OCR engine with fallback chain:
+        1. pix2tex (LatexOCR) — trained on im2latex, outputs LaTeX directly
+        2. TrOCR (microsoft/trocr-base-handwritten) — handwriting transformer
+        3. PaddleOCR — last resort for any remaining text
+
+    Usage:
+        engine = MathOCREngine()
+        latex, confidence, backend = engine.recognise(crop)
+    """
+
+    def __init__(self, use_gpu: bool = False):
+        self._engines: list[tuple[str, object]] = []
+        self._use_gpu = use_gpu
+        self._init_pix2tex()
+        self._init_trocr()
+        self._init_paddle_fallback()
+        if not self._engines:
+            raise RuntimeError(
+                "No math OCR backend available. Install one of: "
+                "pix2tex, transformers (for TrOCR), paddleocr"
+            )
+        names = [name for name, _ in self._engines]
+        print(f"[INFO] MathOCR backends: {' -> '.join(names)}")
+
+    # --- Backend initialisation ---
+
+    def _init_pix2tex(self) -> None:
+        try:
+            from pix2tex.cli import LatexOCR
+            self._latex_ocr = LatexOCR()
+            self._engines.append(("pix2tex", self._recognise_pix2tex))
+            print("[INFO] MathOCR: pix2tex (LatexOCR) loaded.")
+        except ImportError:
+            print("[WARN] pix2tex not installed. pip install 'pix2tex[gui]'")
+        except Exception as e:
+            print(f"[WARN] pix2tex init failed: {e}")
+
+    def _init_trocr(self) -> None:
+        try:
+            from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+            model_name = "microsoft/trocr-base-handwritten"
+            self._trocr_processor = TrOCRProcessor.from_pretrained(model_name)
+            self._trocr_model = VisionEncoderDecoderModel.from_pretrained(model_name)
+            self._engines.append(("trocr", self._recognise_trocr))
+            print("[INFO] MathOCR: TrOCR (handwritten) loaded.")
+        except ImportError:
+            print("[WARN] transformers not installed for TrOCR. pip install transformers")
+        except Exception as e:
+            print(f"[WARN] TrOCR init failed: {e}")
+
+    def _init_paddle_fallback(self) -> None:
+        try:
+            self._paddle_engine = OCREngine(use_gpu=self._use_gpu)
+            self._engines.append(("paddleocr", self._recognise_paddle))
+        except RuntimeError:
+            pass
+
+    # --- Public interface ---
+
+    def recognise(self, crop: np.ndarray) -> tuple[str, float, str]:
+        """
+        Run math OCR on a single equation crop with fallback chain.
+
+        Parameters:
+            crop: RGB numpy array (H x W x 3), uint8.
+
+        Returns:
+            (text, confidence, backend_name)
+        """
+        if crop.size == 0:
+            return ("", 0.0, "none")
+
+        preprocessed = _preprocess_math_crop(crop)
+
+        for name, fn in self._engines:
+            try:
+                text, conf = fn(preprocessed)
+                if text.strip() and conf > 0.3:
+                    return (text.strip(), conf, name)
+            except Exception as e:
+                print(f"[WARN] MathOCR {name} failed: {e}")
+                continue
+
+        return ("", 0.0, "none")
+
+    # --- Individual backends ---
+
+    def _recognise_pix2tex(self, crop: np.ndarray) -> tuple[str, float]:
+        from PIL import Image as PILImage
+        # pix2tex expects a PIL Image
+        pil_img = PILImage.fromarray(crop)
+        latex = self._latex_ocr(pil_img)
+        # pix2tex does not return confidence; use 0.85 as default
+        return (latex, 0.85)
+
+    def _recognise_trocr(self, crop: np.ndarray) -> tuple[str, float]:
+        import torch
+        from PIL import Image as PILImage
+        pil_img = PILImage.fromarray(crop)
+        pixel_values = self._trocr_processor(
+            images=pil_img, return_tensors="pt"
+        ).pixel_values
+        with torch.no_grad():
+            outputs = self._trocr_model.generate(
+                pixel_values, max_new_tokens=128
+            )
+        text = self._trocr_processor.batch_decode(
+            outputs, skip_special_tokens=True
+        )[0]
+        # TrOCR returns plain text, not LaTeX
+        return (text, 0.75)
+
+    def _recognise_paddle(self, crop: np.ndarray) -> tuple[str, float]:
+        return self._paddle_engine.recognise(crop)
+
+
+# ---------------------------------------------------------------------------
+# 6. BATCH MATH TRANSCRIPTION
+# ---------------------------------------------------------------------------
+
+def transcribe_math_regions(
+    regions: list,
+    engine: Optional[MathOCREngine] = None,
+) -> list[MathTranscriptionResult]:
+    """
+    Transcribe equation regions using the math-specific OCR engine.
+
+    Parameters:
+        regions: Output from layout_detector.run_inference() filtered
+                 to equation-class regions only.
+        engine:  Pre-initialised MathOCREngine (created if None).
+
+    Returns:
+        List[MathTranscriptionResult] preserving input ordering.
+    """
+    if engine is None:
+        engine = MathOCREngine()
+
+    results: list[MathTranscriptionResult] = []
+
+    for region in regions:
+        text, conf, backend = engine.recognise(region.crop)
+        line_count = text.count("\n") + 1 if text else 0
+
+        results.append(MathTranscriptionResult(
+            region_class=region.class_name,
+            bbox_xyxy=region.bbox_xyxy,
+            latex=text if backend == "pix2tex" else "",
+            plain_text=text if backend != "pix2tex" else "",
+            confidence=conf,
+            backend=backend,
+            line_count=line_count,
+        ))
+
+        print(f"  [MathOCR] {backend}  conf={conf:.3f}  "
+              f"chars={len(text)}  text={text[:60]}...")
+
+    return results
+
+
+
+# ---------------------------------------------------------------------------
+# 7. STANDALONE EXECUTION (DEMO)
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":

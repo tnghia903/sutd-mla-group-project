@@ -23,6 +23,10 @@ roboflow>=1.1
 pandas>=2.0
 matplotlib>=3.7
 
+# --- Math-Specific OCR (v2 pipeline) ---
+pix2tex>=0.1.1
+transformers>=4.30
+
 # --- Optional Fallback OCR ---
 # easyocr>=1.7
 # pytesseract>=0.3.10

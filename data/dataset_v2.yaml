@@ -1,0 +1,7 @@
+names:
+- equation
+- whiteboard
+nc: 2
+path: /Users/nghia/Developer/mla-proj/data/raw/composite
+train: train/images
+val: valid/images

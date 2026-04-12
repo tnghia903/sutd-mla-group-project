@@ -30,9 +30,9 @@ data/raw/
 data/dataset.yaml
 
 # Model Weights
-*.pt
-*.pth
-weights/
+# *.pt
+# *.pth
+# weights/
 
 # Distribution / packaging
 build/
