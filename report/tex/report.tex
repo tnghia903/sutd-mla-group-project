@@ -1,8 +1,5 @@
 \documentclass[11pt, a4paper]{article}
 
-% ══════════════════════════════════════════════════════════════
-% PREAMBLE — Packages
-% ══════════════════════════════════════════════════════════════
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
@@ -11,7 +8,6 @@
 \usepackage{mathtools}
 \usepackage{graphicx}
 \usepackage{booktabs}
-\usepackage{hyperref}
 \usepackage{xcolor}
 \usepackage{listings}
 \usepackage{algorithm}
@@ -21,7 +17,9 @@
 \usepackage{caption}
 \usepackage{subcaption}
 \usepackage[backend=biber, style=ieee]{biblatex}
-\addbibresource{references.bib}
+\addbibresource{../bibs/references.bib}
+% Load hyperref after biblatex (see biblatex manual).
+\usepackage{hyperref}
 
 % ── Code listing style ──
 \lstset{
@@ -43,13 +41,8 @@
 \newcommand{\Reals}{\mathbb{R}}
 \DeclareMathOperator*{\argmax}{arg\,max}
 
-% ══════════════════════════════════════════════════════════════
-% TITLE BLOCK
-% ══════════════════════════════════════════════════════════════
 \title{
-  \textbf{Whiteboard-to-Knowledge-Base Agent:} \\[0.3em]
-  \Large Digitising Handwritten Diagrams using Single-Shot \\
-  Object Detection and OCR with YOLOv8 and PP-OCRv3
+  \textbf{Optical Character Recognition} \\[0.3em]
 }
 
 \author{
@@ -62,526 +55,207 @@
   \normalsize Spring 2026
 }
 
-\date{Submission Date: \today}
-
 \begin{document}
 \maketitle
-\begin{abstract}
-This report presents a modular machine-learning pipeline for \textbf{handwritten whiteboard digitisation} that decouples spatial region detection from sequential text recognition. The system employs a YOLOv8-nano single-shot object detector to localise semantic regions (Handwriting, Diagram, Arrow, Equation, Sticky Note) in whiteboard photographs, followed by a PP-OCRv3 recogniser grounded in the CRNN architecture with Connectionist Temporal Classification (CTC) loss to transcribe handwritten content. We formalise the theoretical underpinnings of both the spatial detection and sequential recognition stages, demonstrate the end-to-end pipeline on synthetic whiteboard images, and discuss the architectural advantages of treating whiteboard digitisation as a two-stage spatial-sequential problem rather than a monolithic model.
-\end{abstract}
 \newpage
 
 \tableofcontents
 \newpage
 
-% ══════════════════════════════════════════════════════════════
-% SECTION 1: MOTIVATION
-% ══════════════════════════════════════════════════════════════
-\section{Motivation}\label{sec:motivation}
+\section{Motivation}
 
-Whiteboards are ubiquitous in collaborative environments—meeting rooms, lecture halls, and design studios. The handwritten content captured during brainstorming sessions, architectural sketches, and mathematical derivations represents high-value intellectual output that is inherently \emph{ephemeral}: once the board is erased, the knowledge is lost.
+Whiteboards are ubiquitous in collaborative environments: meeting rooms, lecture halls, and design studios. The content produced there---handwritten notes, diagrams with annotations, equations, and sketches---often encodes decisions, rationales, and tacit knowledge that is costly to reconstruct later. That content is also inherently \emph{ephemeral}: once the board is erased, the trace disappears unless it has been captured in a durable, machine-readable form.
 
-While smartphone cameras make it trivial to photograph a whiteboard, the resulting image is merely a passive raster—it cannot be searched, edited, version-controlled, or integrated into a digital knowledge base. Applying raw Optical Character Recognition (OCR) to a full whiteboard photograph produces garbled output because the engine has no understanding of the \emph{spatial structure}: handwritten notes, diagrams, arrows, equations, and sticky notes are spatially interleaved with no inherent reading order.
+Photographing a board is easy, but a photo is only a passive bitmap. It cannot be searched by keyword, quoted precisely in reports, diffed across versions, or linked into task trackers and knowledge bases. The gap between ``we have an image'' and ``we have usable text'' is exactly what Optical Character Recognition (OCR) is meant to close.
 
-Consider a whiteboard captured after a systems design meeting. A na\"ive OCR scan would interleave text from scattered handwriting blocks, confuse arrow annotations with text, and ignore non-textual content entirely (diagrams, flowcharts). The resulting character stream, while locally plausible, is globally incoherent.
-
-The core challenge of \textbf{whiteboard digitisation} is therefore not merely character recognition but \textbf{spatial understanding}: identifying \emph{what} regions exist on the board (handwriting, diagrams, equations, sticky notes), \emph{where} they are located, and \emph{in what order} they should be processed before any text recognition is attempted.
-
-This motivates a two-stage pipeline architecture:
+This report adopts a standard two-stage deep learning pipeline that mirrors how humans read a cluttered board: first find candidate text regions, then read each region as a sequence of characters.
 \begin{enumerate}[label=\arabic*.]
-  \item \textbf{Spatial Detection Stage:} A single-shot object detector (YOLOv8) localises and classifies whiteboard regions into semantic categories (Handwriting, Diagram, Arrow, Equation, Sticky Note).
-  \item \textbf{Sequential Recognition Stage:} A CRNN-based recogniser (PP-OCRv3) transcribes the content of each cropped text-bearing region independently, preserving the spatial layout established by the first stage.
+  \item \textbf{Text detection (Mask R-CNN):} predict instance-level regions (bounding boxes and optional masks) so each text line or word can be cropped for recognition.
+  \item \textbf{Text recognition (CRNN + CTC):} map each crop to a character string without hand-designed character segmentation, using a convolutional front end and a recurrent encoder trained with Connectionist Temporal Classification (CTC).
+\end{enumerate}
+Decomposing the problem improves interpretability (we can diagnose detection versus recognition failures), reuse (the same recognizer can run on other detectors), and data efficiency (detection and recognition can be pre-trained on different corpora). The motivation is therefore not only accuracy in isolation, but a maintainable pipeline whose errors can be measured and improved stage by stage.
+
+
+
+\section{Context}
+\subsection{Problem setting and pipeline role}
+OCR sits at the boundary of computer vision and sequence modeling. The input is an image (or a region thereof); the output is structured text, often with an implicit reading order. In document and scene OCR, the dominant paradigm is still \emph{detect-then-recognize}: a detector proposes regions, and a recognizer consumes fixed-height crops rescaled to the recognizer's input geometry \cite{long2021survey,shi2016crnn}. That decomposition remains relevant even as end-to-end document models emerge \cite{kim2022donut}, because modular pipelines are easier to debug, swap, and deploy under compute constraints.
+
+For whiteboard-like imagery, detection must tolerate free-form layout and overlapping ink, while recognition must tolerate stroke variability and low contrast. Mask R-CNN \cite{he2017maskrcnn} is a natural detection choice when instance masks help separate touching or densely packed lines; CRNN \cite{shi2016crnn} is a mature recognition backbone when labels are strings without per-character time alignments.
+
+\subsection{Historical progression}
+At a high level \cite{mori1999ocrsurvey,smith2007tesseract,shi2016crnn,baek2019str}:
+\begin{enumerate}[leftmargin=*]
+    \item Template and rule-based systems with heavy preprocessing.
+    \item Statistical models with engineered features and explicit or implicit segmentation.
+    \item CNN--RNN hybrids with CTC or attention for alignment-free or soft-aligned training.
+    \item Transformers and large-scale pretraining for recognition and document understanding \cite{li2023trocr,kim2022donut}.
 \end{enumerate}
 
-This decoupled architecture ensures that spatial routing errors do not propagate into the recognition phase, and vice versa—a principle of fault isolation that is well-understood in systems engineering but under-appreciated in monolithic deep-learning approaches.
+\subsection{Precedent topics}
+OCR inherits ideas from classical image processing and pattern recognition: binarization, connected components, skew correction, and template- or feature-based classifiers \cite{mori1999ocrsurvey}. Industrial engines such as Tesseract historically combined carefully engineered pipelines with adaptive thresholding and language models at decode time \cite{smith2007tesseract}. Statistical sequence models (for example Hidden Markov Models) already treated recognition as alignment between observations and discrete labels, foreshadowing modern sequence losses.
 
+Deep learning shifted the emphasis from hand-crafted features to learned representations. CNNs supply translation-tolerant visual features; recurrent or attention-based heads model the left-to-right structure of text in a crop \cite{jaderberg2016reading,shi2016crnn}. Surveys of scene text detection and recognition summarize the explosion of architectures and benchmarks in the deep learning era \cite{long2021survey}.
 
-% ══════════════════════════════════════════════════════════════
-% SECTION 2: CONTEXT
-% ══════════════════════════════════════════════════════════════
-\section{Context}\label{sec:context}
+\subsection{Successor topics}
+Once text is extracted, it feeds downstream systems: information retrieval over meeting archives, automatic minutes, accessibility (screen readers), and retrieval-augmented generation where scanned or photographed boards become part of a corpus. Layout-aware models additionally use spatial relations between blocks \cite{kim2022donut}. Stronger language models at decode time further blur the line between ``vision-only'' recognition and NLP-style correction.
 
-We position our hybrid pipeline against three established paradigms in handwritten content understanding:
-
-\subsection{Traditional Sliding-Window CNNs}
-Early whiteboard reading systems employed sliding-window Convolutional Neural Networks that classified each pixel or patch independently~\cite{kota2014whiteboard}. While effective for binary segmentation (ink vs.\ background), these methods suffer from:
-\begin{itemize}
-  \item \textbf{Computational redundancy:} Overlapping windows re-process the same spatial features.
-  \item \textbf{Loss of global context:} A small receptive field cannot distinguish handwritten text from a diagram when both contain dark strokes on a light background.
-  \item \textbf{Post-processing overhead:} Connected-component analysis and heuristic merging are required to assemble pixel-level predictions into coherent regions.
+\subsection{Tangential topics}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Handwritten text recognition (HTR):} larger stroke-level variability than printed OCR; datasets such as IAM support line-level supervision \cite{marti2002iam}.
+    \item \textbf{Scene text:} perspective, blur, and background clutter; benchmark analyses highlight how evaluation protocol affects reported gains \cite{baek2019str,li2021trba}.
+    \item \textbf{Language-aware decoding:} lexicons, $n$-gram or neural language models, and beam search bias hypotheses toward fluent text \cite{shi2016crnn}.
 \end{itemize}
 
-\subsection{Pure Sequence-to-Sequence Models}
-Transformer-based models such as TrOCR~\cite{li2023trocr} and Donut~\cite{kim2022donut} attempt to solve detection and recognition jointly by encoding spatial coordinates as token-level features. While architecturally elegant, these models:
-\begin{itemize}
-  \item Require enormous pre-training corpora (millions of document pages), which are scarce for handwritten whiteboard content.
-  \item Struggle with out-of-distribution layouts not seen during pre-training—whiteboards are inherently freeform.
-  \item Conflate two fundamentally different learning objectives—spatial localisation and sequence generation—into a single loss function, creating optimisation tension.
-\end{itemize}
 
-\subsection{The Hybrid Pipeline (Our Approach)}
-By decoupling spatial detection from text recognition, our pipeline leverages the strengths of each sub-model:
-\begin{itemize}
-  \item YOLOv8 excels at \emph{single-shot, real-time} bounding-box regression with strong localisation accuracy~\cite{redmon2016yolo, jocher2023yolov8}, and can be fine-tuned on whiteboard-specific classes with a small labelled dataset.
-  \item PP-OCRv3's CRNN backbone, trained specifically on text-line images including handwritten samples, achieves robust character recognition without needing to ``understand'' the full board layout~\cite{du2022ppocr}.
-\end{itemize}
-
-This separation-of-concerns principle means each module can be independently developed, evaluated, and upgraded—a critical advantage for asynchronous team collaboration.
-
-\section{Motivation}
-Consider an expense-management workflow where employees submit mobile photos of receipts. The images are often noisy: text may be skewed, partially occluded, low contrast, or motion blurred. Vendor names can use stylized fonts, and currency/date formats vary by region.
-
-Without OCR, every receipt must be keyed in manually, creating delay and human error. With OCR, organizations can automatically extract fields such as merchant, date, and total amount, then route results into accounting systems. The engineering challenge is that recognition quality depends not only on character classification accuracy but also on detection quality, sequence alignment, and linguistic plausibility.
-
-This mix of high business impact and real-world noise explains why OCR remains both economically valuable and technically interesting.
 
 \section{Theory}
-This section explains a canonical OCR pipeline:
+
+\subsection{Convolutional neural networks}
+A convolutional neural network (CNN) stacks convolution layers that apply learned filters across spatial locations. Shared weights enforce translation equivariance: the same feature responds to a pattern regardless of small shifts in the input. Nonlinearities and pooling (or strided convolutions) build a hierarchy from edges and strokes to parts and whole glyphs. For OCR, CNNs therefore reduce sensitivity to slight misalignment of a crop while still encoding local stroke structure.
+
+In both Mask R-CNN and CRNN, a CNN acts as a \emph{backbone} or \emph{visual encoder}: it maps the input image to feature maps that downstream heads interpret as either object proposals (detection) or a sequence of column-wise descriptors (recognition).
+
+\subsection{Recurrent neural networks}
+A recurrent neural network (RNN) maintains a hidden state updated at each time step, allowing the model to carry context along a sequence. For text recognition, the sequence index often corresponds to horizontal position in a feature map after the CNN. Unidirectional RNNs use past context only; bidirectional RNNs (for example bidirectional LSTMs) combine forward and backward passes so each position conditions on both sides of a character. That is valuable for ambiguous characters (\texttt{0} vs \texttt{O}, \texttt{l} vs \texttt{I}) where local appearance is insufficient. Gated units (LSTM, GRU) mitigate vanishing gradients over long spans compared with plain tanh RNNs.
+
+\subsection{Text detection}
+Text detection answers \emph{where} to read. Unlike full-image classification, the model must output a variable number of regions, each with a confidence score and geometry. General object detectors adapt well to ``text'' as a class: they learn discriminative boundary cues (ink contrast, stroke alignment) and suppress background (markers, wall texture, diagrams). Surveys of scene text organize methods by representation---regression of oriented boxes, segmentation of text regions, or hybrid anchor/refinement pipelines---and emphasize that failure modes differ by layout, script, and resolution \cite{long2021survey}.
+
+\textbf{Supervision granularity and targets.} Labels may be words, lines, or arbitrary quadrilaterals. Line-level boxes match how many sequence recognizers consume crops (one baseline per crop); word-level boxes increase instance count and boundary ambiguity at spaces. Axis-aligned rectangles are simple to annotate and fast to evaluate with IoU, but they waste area on slanted or curved lines; rotated or quadrilateral targets tighten the envelope at the cost of more complex regression and NMS. For whiteboards, free-form placement and long horizontal lines favor predictors that tolerate large aspect ratios and occasional overlap between neighboring instances.
+
+\textbf{Multi-scale features.} Text strokes vary from sub-pixel thickness in distant photos to dominant structure in close-ups. Modern detectors therefore build a \emph{feature pyramid} from the backbone (often with lateral connections and top-down pathways) so that small text is still represented at high spatial resolution while large regions draw context from semantically strong low-resolution maps. Proposal networks and heads consume pyramid levels jointly, which stabilizes recall for both fine print and headings on the same board.
+
+\textbf{Proposal-based two-stage detection.} Region-based CNNs follow a coarse-to-fine pattern: a backbone builds a multi-scale feature pyramid; a region proposal network (RPN) classifies anchor boxes as foreground/background and regresses box refinements; a second stage pools features inside each proposal and predicts class labels and refined boxes. Non-maximum suppression (NMS) then removes redundant high-overlap predictions. For elongated text, anchor banks are usually skewed toward wide, short boxes on each pyramid level so that the RPN does not systematically miss lines that would require extreme aspect ratios from square-ish defaults.
+
+\textbf{Mask R-CNN.} Mask R-CNN extends Faster R-CNN with a parallel \emph{mask head} that predicts a binary mask inside each region of interest, using RoIAlign to avoid quantization artifacts when sampling features from the feature map \cite{he2017maskrcnn}. RoIAlign uses bilinear interpolation on continuous coordinates so that small box shifts do not snap to the wrong feature bins---a practical issue when box width is only a few pixels per character. The multi-task loss combines classification, bounding-box regression, and per-pixel mask loss (typically binary cross-entropy). For text, masks can follow irregular ink more tightly than axis-aligned rectangles alone---useful for curved baselines, tightly packed lines, or partial occlusion on a whiteboard.
+
+\textbf{Related detector families.} Single-stage detectors such as YOLO \cite{redmon2016yolo} regress boxes and class scores in one pass and are often faster at similar input resolutions, though very small instances can demand careful tuning. Segmentation-based methods predict a text probability map and decode boxes or polygons afterward; differentiable binarization (DB) trains tight boundaries and is widely used when low latency matters \cite{liao2020db}. For whiteboard ink that touches across lines, this report still favors Mask R-CNN when instance masks are available to separate instances before recognition.
+
+\textbf{Training objective.} With classes $\mathcal{C}$ (including ``text''), bounding boxes $B$, and mask targets $M$, training minimizes a weighted sum of losses:
 \[
-\text{Image} \rightarrow \text{Preprocessing} \rightarrow \text{Text Detection} \rightarrow \text{Sequence Recognition} \rightarrow \text{Decoding}.
+\mathcal{L}_{\text{Mask R-CNN}}
+= \mathcal{L}_{\text{RPN}} + \mathcal{L}_{\text{cls}} + \mathcal{L}_{\text{box}} + \mathcal{L}_{\text{mask}}.
 \]
+Here $\mathcal{L}_{\text{box}}$ encourages tight localization (smooth L1 or related regression loss on box parameters), while $\mathcal{L}_{\text{mask}}$ encourages pixel-accurate coverage of text strokes inside each positive detection.
 
-\subsection{Pipeline Components}
-\textbf{Preprocessing:} geometric correction (deskewing), denoising, and contrast normalization improve downstream feature quality.
+\textbf{Post-processing.} After inference, detections are filtered by score threshold, NMS merges overlapping boxes, and crops (optionally masked or padded to a fixed aspect ratio) are passed to the recognizer. Score calibration matters for downstream matching: overconfident duplicate boxes waste recognizer compute and can duplicate text in the transcript unless suppressed by IoU-aware NMS or mask-aware merging. Weak detection---missed lines, merged regions, or shifted boxes---directly causes recognition errors even when the recognizer is strong, because CTC-based recognizers assume a single dominant line per crop and degrade when two strings overlap spatially.
 
-\textbf{Text Detection:} a detector proposes text regions (lines/words) from the page or scene \cite{liao2020db}.
+\subsection{Text recognition: from image columns to character posteriors}
+Let a detector crop (or masked patch) be $X$. Recognition outputs a string $y$ over an alphabet $\mathcal{V}$. The CRNN architecture \cite{shi2016crnn} chains three ideas: (i) extract a deep feature map with a CNN, (ii) treat horizontal position as discrete time, and (iii) model inter-column dependence with a recurrent encoder before emitting a distribution over $\mathcal{V} \cup \{\varnothing\}$ at each time step.
 
-\textbf{Sequence Recognition:} a recognizer maps each cropped text region to a sequence of character probabilities over time steps.
+\textbf{CNN feature map.} The CNN maps $X$ to a tensor with reduced height and width. Height is often collapsed to one or few rows so that each spatial column aggregates vertical evidence across the text line. Width $T$ then indexes positions along the line; longer lines yield larger $T$ after fixed-scale resizing, which is how variable-length text is represented without resizing the string.
 
-\textbf{Decoding with Language Constraints:} final text is selected by combining visual likelihood and language priors.
+\textbf{Column-wise sequence.} Let $H = f_{\theta}(X) = (h_1,\ldots,h_T)$ be the sequence of column descriptors read left to right. Each $h_t \in \Reals^d$ summarizes local appearance at that horizontal location.
 
-\subsection{Text Detection in More Detail}
-Text detection identifies where text appears before recognition runs. In OCR for documents, detectors often predict word- or line-level boxes. In scene text, detectors may need rotated rectangles or polygons because text can be slanted or curved.
+\textbf{BiLSTM encoding.} A bidirectional RNN computes forward and backward hidden states and concatenates them:
+\[
+\overrightarrow{s_t} = \mathrm{RNN}_f(h_t,\overrightarrow{s_{t-1}}), \qquad
+\overleftarrow{s_t} = \mathrm{RNN}_b(h_t,\overleftarrow{s_{t+1}}), \qquad
+s_t = [\overrightarrow{s_t};\overleftarrow{s_t}].
+\]
+The emitted vector $s_t$ encodes both local visual evidence and contextual neighbors, reducing confusion between visually similar characters.
 
-\textbf{Typical detection pipeline:}
-\begin{enumerate}[leftmargin=*]
-    \item Extract visual features with a CNN backbone.
-    \item Predict candidate text regions and confidence scores.
-    \item Filter low-confidence regions.
-    \item Apply non-maximum suppression (NMS) to remove duplicates.
-    \item Pass the final boxes to the recognizer as cropped regions.
-\end{enumerate}
+\textbf{Per-step posteriors.} A linear layer with softmax yields frame-level probabilities
+\[
+P(\pi_t = k \mid X) = \mathrm{softmax}(W s_t + b)_k, \qquad k \in \mathcal{V} \cup \{\varnothing\},
+\]
+where $\varnothing$ is the CTC blank. These $T$ distributions are the only per-frame supervision needed: no boundary labels for where each character starts or ends.
 
-\textbf{Box overlap and IoU:} Detection quality is commonly measured using Intersection over Union (IoU) between predicted region $B_p$ and ground-truth region $B_g$:
+\subsection{Connectionist Temporal Classification (CTC)}
+CTC \cite{graves2006ctc} trains sequence models when the alignment between time steps $t=1,\ldots,T$ and label indices is unknown. Let $y = (y_1,\ldots,y_{|y|})$ be the target string. A \emph{path} $\pi = (\pi_1,\ldots,\pi_T)$ with $\pi_t \in \mathcal{V} \cup \{\varnothing\}$ is a frame-wise label sequence. Define the collapse map $\mathcal{B}$ that (1) removes blanks and (2) merges consecutive identical symbols. For duplicate characters in $y$ (for example ``hello''), valid paths must insert a blank between repeated letters so that collapse does not merge them incorrectly; the dynamic-programming construction of allowed transitions encodes this constraint.
+
+\textbf{Path likelihood.} Assuming conditional independence across time given the recurrent state (the standard CTC graphical model),
+\[
+P(\pi \mid X) = \prod_{t=1}^{T} P(\pi_t \mid X).
+\]
+The probability of string $y$ is the sum over all paths that collapse to $y$:
+\[
+P(y \mid X) = \sum_{\pi \in \mathcal{B}^{-1}(y)} P(\pi \mid X),
+\qquad
+\mathcal{L}_{\text{CTC}} = -\log P(y \mid X).
+\]
+The set $\mathcal{B}^{-1}(y)$ is enormous, but $P(y \mid X)$ is computed in $O(T\,|y|)$ by dynamic programming. Let $y'$ denote the label sequence expanded with blanks following the CTC topology. Forward variables $\alpha_t(j)$ accumulate probability mass for prefixes of $y'$ ending in state $j$ at time $t$; backward variables $\beta_t(j)$ play the symmetric role. Transitions respect whether the next symbol is a blank or a character and whether repeated characters require a blank spacer. Implementations use log-space arithmetic for numerical stability.
+
+\textbf{Why CTC suits OCR.} Characters vary in width; the same letter may span several columns after pooling. CTC does not force a one-to-one link between characters and fixed-width windows. Instead, the network may emit blanks until evidence supports the next character, spreading probability mass over many valid alignments during early training.
+
+\subsection{Decoding and language-informed search}
+Training optimizes $P(y \mid X)$, but inference requires choosing one string $\hat{y}$. Shi et al.\ \cite{shi2016crnn} discuss decoding for image-based sequence recognition with CTC in both \emph{lexicon-free} and \emph{lexicon-constrained} regimes (their CRNN experiments on scene text use both).
+
+\textbf{Greedy (best-path) decoding.} The simplest rule takes the most likely label at each frame, $\pi_t = \arg\max_k P(\pi_t{=}k\mid X)$, then applies the CTC collapse $\mathcal{B}$. This is fast but can be suboptimal: locally best symbols need not maximize $P(y\mid X)$ after collapse \cite{shi2016crnn}.
+
+\textbf{Beam search.} Keeping the top $B$ partial hypotheses by cumulative score explores alternatives that per-step greedy search discards. Shi et al.\ \cite{shi2016crnn} use beam search when scoring candidates against a lexicon or when approximate search over a large word list is needed.
+
+\textbf{Lexicon and language priors.} When a dictionary $\mathcal{L}$ is known (per-image word list or application vocabulary), decoding restricts $\mathcal{Y}\subseteq\mathcal{L}$ or re-ranks hypotheses using lexical overlap with the CTC output \cite{shi2016crnn}. A convenient scoring form combines the CTC string likelihood with a language or lexicon model $P_{\text{LM}}$ over the candidate string:
+\[
+\hat{y} = \arg\max_{y \in \mathcal{Y}} \Big[ \log P_{\text{CTC}}(y \mid X) + \lambda \log P_{\text{LM}}(y) + \beta\,|y| \Big],
+\]
+where $\mathcal{Y}$ is the beam or lexicon; $\lambda$ weights the linguistic prior relative to the visual model; and $\beta$ can penalize length \cite{shi2016crnn}. In the open-vocabulary case, $\mathcal{Y}$ is unconstrained other than the beam; with a closed lexicon, $\mathcal{Y}=\mathcal{L}$.
+
+\section{Evaluation Metrics}
+
+Evaluation should reflect the pipeline: detection quality, recognition quality on isolated crops, and end-to-end behavior when both stages compose.
+
+\subsection{Text detection (Mask R-CNN)}
+Let each ground-truth instance have a bounding box (and optionally a mask polygon). Predictions are matched to ground truth using Intersection over Union (IoU) on boxes, or mask IoU if masks are evaluated:
 \[
 \mathrm{IoU}(B_p,B_g)=\frac{|B_p \cap B_g|}{|B_p \cup B_g|}.
 \]
-A prediction is counted as a true positive if IoU is above a threshold (for example, 0.5) and the class/confidence constraints are met. Higher thresholds are stricter and penalize poor localization.
+A prediction is a true positive (TP) if it is matched to an unmatched ground-truth object with IoU $\geq \tau$ (common $\tau \in \{0.5,0.75\}$) and the predicted class is correct. Unmatched predictions are false positives (FP); unmatched ground truths are false negatives (FN).
 
-\textbf{NMS:} Multiple nearby predictions often correspond to the same text instance. NMS sorts boxes by confidence, keeps the highest-scoring box, and suppresses lower-scoring boxes with overlap above an NMS threshold. This improves precision by reducing duplicate detections.
-
-\textbf{Training objective (conceptual):} Many text detectors optimize a joint loss with a classification term and a localization term:
-\[
-\mathcal{L}_{\text{det}}=\mathcal{L}_{\text{cls}}+\alpha \mathcal{L}_{\text{loc}},
-\]
-where $\mathcal{L}_{\text{cls}}$ learns text vs non-text confidence, and $\mathcal{L}_{\text{loc}}$ learns accurate box geometry (center, width/height, angle, or polygon vertices).
-
-\textbf{Detection metrics:} Precision and recall for text detection are:
+\textbf{Precision, recall, and F1 at a fixed IoU:}
 \[
 \mathrm{Precision}=\frac{TP}{TP+FP}, \qquad
-\mathrm{Recall}=\frac{TP}{TP+FN},
-\]
-and the harmonic mean (F1-score) is:
-\[
+\mathrm{Recall}=\frac{TP}{TP+FN}, \qquad
 F_1 = \frac{2 \cdot \mathrm{Precision}\cdot \mathrm{Recall}}{\mathrm{Precision}+\mathrm{Recall}}.
 \]
-In practice, OCR errors can originate from weak detection even if the recognizer is strong, so detector quality is a major bottleneck.
+\textbf{Average precision (AP) and mean AP (mAP):} For a given IoU threshold, sort predictions by confidence and plot precision versus recall as the score threshold varies; AP is the area under this curve. mAP averages AP across classes (for single-class ``text'', mAP reduces to AP for that class). COCO-style evaluation reports mAP@0.5 and mAP@0.5:0.95 (AP averaged over IoU from 0.5 to 0.95), which rewards both localization and ranking quality \cite{he2017maskrcnn}.
 
-\subsection{Visual Encoding and Sequence Probabilities}
-Let input image crop be $X$. A feature extractor (typically CNN-based) produces a sequence of feature vectors:
+\textbf{Mask-specific quality.} When masks are used to separate touching lines, mean mask IoU on matched instances measures pixel-level tightness beyond axis-aligned box IoU.
+
+\subsection{Text recognition (CRNN + CTC)}
+Recognition metrics assume a protocol: either (i) \textbf{isolated crop evaluation}, where crops are generated from ground-truth boxes so detector errors do not affect the score, or (ii) \textbf{detector-provided crops}, which mixes recognition with crop quality.
+
+Let $S$, $D$, and $I$ denote substitutions, deletions, and insertions from the Levenshtein alignment between hypothesis and reference, and let $N$ be the number of reference characters (for CER) or words (for WER).
+
+\textbf{Character Error Rate (CER):}
 \[
-H = f_{\theta}(X) = (h_1, h_2, \ldots, h_T).
+\mathrm{CER} = \frac{S + D + I}{N_{\text{chars}}}.
 \]
-A sequence model predicts a distribution over character vocabulary $\mathcal{V}$ plus a blank symbol at each step:
-\[
-P(\pi_t \mid X), \quad \pi_t \in \mathcal{V} \cup \{\varnothing\}, \quad t=1,\ldots,T.
-\]
+\textbf{Word Error Rate (WER):} same formula at word level with $N_{\text{words}}$ reference words.
 
-\subsection{CRNN in More Detail}
-A common recognizer is the Convolutional Recurrent Neural Network (CRNN), which combines CNN-based visual feature extraction with sequence modeling \cite{shi2016crnn}. The key idea is to avoid explicit character segmentation and instead learn a direct mapping from an entire word/line image to a character sequence.
+\textbf{Sequence accuracy:} exact match rate is the fraction of crops for which $\mathrm{CER}=0$ (equivalently hypothesis equals reference). \textbf{Normalized edit distance} is sometimes reported as $1-\mathrm{CER}$ for interpretability.
 
-\textbf{CNN stage:} The input text image is transformed into a 2D feature map. Pooling and convolution progressively increase receptive field size so each local descriptor encodes richer context than raw pixels.
+\textbf{Calibration-style diagnostics (optional):} average CTC entropy per frame, or frame-wise max-probability, can indicate overconfident but wrong predictions when CER is high.
 
-\textbf{Sequence conversion:} The feature map is read column-wise (or along width) to form a sequence of feature vectors. If the map has width $T$, the recognizer gets $T$ time steps. This naturally supports variable-length text because $T$ depends on image width.
+\subsection{End-to-end pipeline metrics}
+When detection and recognition run sequentially, errors compound: a missed detection is a deletion of an entire string; a duplicate detection duplicates content; a merged box concatenates two references into one hypothesis.
 
-\textbf{Recurrent stage:} A bidirectional recurrent encoder (often BiLSTM) models dependencies from both left-to-right and right-to-left directions:
-\[
-\overrightarrow{s_t} = \mathrm{RNN}_f(h_t,\overrightarrow{s_{t-1}}), \qquad
-\overleftarrow{s_t} = \mathrm{RNN}_b(h_t,\overleftarrow{s_{t+1}}),
-\]
-\[
-s_t = [\overrightarrow{s_t};\overleftarrow{s_t}].
-\]
-The concatenated state $s_t$ captures local appearance and neighboring character context, which is useful for ambiguous glyphs (for example, distinguishing ``O'' vs ``0'' from context).
+\textbf{Matching-based protocol.} A common approach is: (1) match predicted boxes to reference boxes with IoU $\geq \tau$ (Hungarian matching or greedy one-to-one); (2) for each matched pair, compare recognized text to the reference string for that box (CER/WER); (3) count unmatched predictions as insertions of spurious text and unmatched references as deletions of missed text. Aggregating yields a \textbf{micro-averaged} word or character error over the document, and \textbf{macro-averaged} per-line statistics.
 
-\textbf{Prediction head:} A linear layer plus softmax maps each $s_t$ to character probabilities:
-\[
-P(\pi_t=k\mid X)=\mathrm{softmax}(Ws_t+b)_k.
-\]
-The resulting per-step distributions are trained with CTC loss, enabling alignment-free supervision.
+\textbf{Full-page metrics.} For ordered reading, some benchmarks measure edit distance on the concatenation of text in reading order; this penalizes wrong ordering even when local boxes are correct.
 
-\subsection{CTC Objective}
-In OCR, alignment between time steps and target characters is usually unknown. Connectionist Temporal Classification (CTC) handles this by summing probabilities over all valid alignment paths \cite{graves2006ctc}. For a target string $y$, define $\mathcal{B}^{-1}(y)$ as all paths that collapse to $y$ after removing blanks and repeated symbols. Then:
-\[
-P(y \mid X) = \sum_{\pi \in \mathcal{B}^{-1}(y)} \prod_{t=1}^{T} P(\pi_t \mid X),
-\]
-and the training loss is:
-\[
-\mathcal{L}_{\text{CTC}} = -\log P(y \mid X).
-\]
-This allows end-to-end learning without character-level alignment labels.
-
-\subsection{CTC Alignment Intuition and Example}
-CTC introduces a blank token $\varnothing$ and a collapse operation $\mathcal{B}$:
-\begin{enumerate}[leftmargin=*]
-    \item Merge repeated consecutive symbols.
-    \item Remove blank symbols.
-\end{enumerate}
-For example, both paths below can map to the same word ``CAT'':
-\[
-(\text{C},\varnothing,\text{A},\text{T},\varnothing) \xrightarrow{\mathcal{B}} \text{CAT},
-\]
-\[
-(\text{C},\text{C},\varnothing,\text{A},\text{T}) \xrightarrow{\mathcal{B}} \text{CAT}.
-\]
-Training sums the probability mass of all valid paths, so the model is not forced to choose one exact frame-level alignment early in learning. In practice, this stabilizes training for OCR because character boundaries are often fuzzy (blurred edges, kerning differences, and perspective distortion).
-
-Directly summing all paths is combinatorial, so CTC is computed efficiently with dynamic programming (forward-backward recursion). A practical implication is that the model learns both \emph{what} characters appear and \emph{when} to emit them over the time axis.
-
-\subsection{Decoding}
-At inference, greedy decoding takes the most likely symbol per time step and collapses repeats/blanks. Beam search usually performs better by exploring multiple candidates and optionally using a language model (LM) \cite{shi2016crnn,shi2017aster}:
-\[
-\hat{y} = \arg\max_{y} \left[\log P_{\text{CTC}}(y \mid X) + \lambda \log P_{\text{LM}}(y) + \beta |y|\right],
-\]
-where $\lambda$ controls LM influence and $\beta$ can regularize sequence length.
-
-\subsection{Compact System Diagram}
-\begin{center}
-\fbox{
-\begin{minipage}{0.93\linewidth}
-\centering
-Input Image $\rightarrow$ Preprocessing $\rightarrow$ Detector $\rightarrow$ Crop/Line Features $\rightarrow$ Recognizer (CNN+Sequence Model) $\rightarrow$ CTC/Attention Decoding $\rightarrow$ Output Text
-\end{minipage}
-}
-\end{center}
-
-
-% ══════════════════════════════════════════════════════════════
-% SECTION 3: THEORY (Highest-Weighted Section)
-% ══════════════════════════════════════════════════════════════
-\section{Theory: Spatial-Sequential Modelling}\label{sec:theory}
-
-This section provides a first-principles derivation of the two core theoretical pillars underlying our pipeline: \textbf{(i)} the single-shot spatial detection formulation used by YOLO, and \textbf{(ii)} the Connectionist Temporal Classification (CTC) loss that enables alignment-free sequence recognition in the CRNN/PP-OCRv3 stage.
-
-% ── 3.1 Spatial Detection ──
-\subsection{Spatial Feature Extraction via Convolutional Backbones}\label{sec:cnn_features}
-
-Let $\mathbf{I} \in \Reals^{H \times W \times 3}$ denote an input whiteboard photograph. A convolutional backbone $f_\theta$ (e.g., CSPDarknet in YOLOv8) maps this image to a multi-scale feature hierarchy:
-\begin{equation}\label{eq:feature_extraction}
-  \mathbf{F}^{(l)} = f_\theta^{(l)}(\mathbf{I}), \quad l \in \{1, 2, \ldots, L\}
-\end{equation}
-where $\mathbf{F}^{(l)} \in \Reals^{H_l \times W_l \times C_l}$ is the feature map at scale $l$, with spatial resolution decreasing and channel depth increasing as $l$ grows. These multi-scale features allow the detector to localise both large regions (e.g., full diagrams, large handwriting blocks) and small regions (e.g., single-word annotations, arrow tips).
-
-\subsection{Unified Bounding-Box Regression}\label{sec:bbox_regression}
-
-For each spatial position $(i, j)$ in $\mathbf{F}^{(l)}$, YOLOv8 predicts a set of bounding-box parameters:
-\begin{equation}\label{eq:yolo_output}
-  \hat{\mathbf{b}}_{ij} = \bigl(\hat{x}_c,\; \hat{y}_c,\; \hat{w},\; \hat{h},\; \hat{p}_{\text{obj}},\; \hat{p}_{c_1}, \ldots, \hat{p}_{c_K}\bigr)
-\end{equation}
-where $(\hat{x}_c, \hat{y}_c)$ are the predicted centre coordinates (normalised to $[0,1]$), $(\hat{w}, \hat{h})$ are the predicted width and height, $\hat{p}_{\text{obj}}$ is the objectness score, and $\hat{p}_{c_k}$ is the class probability for category $k \in \{1, \ldots, K\}$. In our whiteboard context, $K = 5$ corresponding to: Handwriting, Diagram, Arrow, Equation, and Sticky Note.
-
-The detection loss $\Loss_{\text{det}}$ combines three objectives:
-\begin{equation}\label{eq:det_loss}
-  \Loss_{\text{det}} = \lambda_{\text{box}} \Loss_{\text{CIoU}} + \lambda_{\text{obj}} \Loss_{\text{obj}} + \lambda_{\text{cls}} \Loss_{\text{cls}}
-\end{equation}
-
-The Complete IoU (CIoU) loss~\cite{zheng2020ciou} is defined as:
-\begin{equation}\label{eq:ciou}
-  \Loss_{\text{CIoU}} = 1 - \text{IoU} + \frac{\rho^2(\mathbf{b}, \hat{\mathbf{b}})}{c^2} + \alpha v
-\end{equation}
-where $\rho(\cdot, \cdot)$ denotes the Euclidean distance between box centres, $c$ is the diagonal of the smallest enclosing rectangle, $v$ measures aspect-ratio consistency, and $\alpha$ is a balancing coefficient.
-
-\textbf{Bounding-box crop extraction.}  Given a normalised prediction $(\hat{x}_c, \hat{y}_c, \hat{w}, \hat{h})$ and image dimensions $(W, H)$, the absolute pixel coordinates for cropping are:
-\begin{equation}\label{eq:crop}
-\begin{aligned}
-  x_{\min} &= \bigl\lfloor (\hat{x}_c - \hat{w}/2) \cdot W \bigr\rfloor, &\quad
-  x_{\max} &= \bigl\lfloor (\hat{x}_c + \hat{w}/2) \cdot W \bigr\rfloor \\
-  y_{\min} &= \bigl\lfloor (\hat{y}_c - \hat{h}/2) \cdot H \bigr\rfloor, &\quad
-  y_{\max} &= \bigl\lfloor (\hat{y}_c + \hat{h}/2) \cdot H \bigr\rfloor
-\end{aligned}
-\end{equation}
-
-The cropped region tensor is then:
-\begin{equation}
-  \mathbf{R} = \mathbf{I}\bigl[y_{\min}:y_{\max},\; x_{\min}:x_{\max},\; :\bigr]
-\end{equation}
-
-% ── Diagram placeholder ──
-\begin{figure}[H]
-  \centering
-  \fbox{\parbox{0.85\textwidth}{\centering
-    \vspace{2cm}
-    \textbf{[INSERT DIAGRAM 1 HERE]} \\[0.5em]
-    Architecture diagram of the YOLOv8 detection head showing the \\
-    CSPDarknet backbone $\to$ FPN neck $\to$ decoupled detection heads \\
-    producing $(\hat{x}_c, \hat{y}_c, \hat{w}, \hat{h}, \hat{p}_{\text{obj}}, \hat{p}_{c_k})$.
-    \vspace{2cm}
-  }}
-  \caption{YOLOv8 architecture for whiteboard region detection. The Feature Pyramid Network (FPN) fuses multi-scale features, enabling simultaneous detection of both large regions (diagrams, handwriting blocks) and small regions (single-word annotations, arrow tips).}
-  \label{fig:yolo_arch}
-\end{figure}
-
-
-% ── 3.2 Sequential Recognition: CRNN ──
-\subsection{Sequential Modelling via Recurrent Neural Networks}\label{sec:rnn}
-
-Once a text-bearing region $\mathbf{R} \in \Reals^{h \times w \times 3}$ is cropped—whether it contains handwriting or a mathematical equation—it must be transcribed into a character sequence $\mathbf{l} = (l_1, l_2, \ldots, l_S)$ where $l_s \in \Sigma$ is a character from the alphabet $\Sigma$ and $S$ is the (variable-length) label length.
-
-The CRNN architecture~\cite{shi2017crnn} solves this in three stages:
-
-\paragraph{Stage A — Convolutional Feature Extraction.}
-A CNN (e.g., ResNet, SVTR-LCNet in PP-OCRv3) extracts a feature map $\mathbf{F}_{\text{ocr}} \in \Reals^{1 \times T \times d}$ from the resized input crop, where $T$ is the number of horizontal time-steps (columns) and $d$ is the feature dimension. This effectively converts the 2D image into a 1D sequence of column-wise feature vectors:
-\begin{equation}\label{eq:cnn_to_seq}
-  \mathbf{x}_\tau = \mathbf{F}_{\text{ocr}}[1, \tau, :], \quad \tau = 1, 2, \ldots, T
-\end{equation}
-
-\paragraph{Stage B — Bidirectional RNN Encoding.}
-The feature sequence $(\mathbf{x}_1, \ldots, \mathbf{x}_T)$ is fed into a bidirectional LSTM (BiLSTM) to capture both left-to-right and right-to-left contextual dependencies. This is particularly important for handwriting, where character shapes depend heavily on neighbouring strokes. The hidden state at time-step $\tau$ is:
-\begin{equation}\label{eq:bilstm}
-  \mathbf{h}_\tau = \bigl[\overrightarrow{\mathbf{h}}_\tau;\; \overleftarrow{\mathbf{h}}_\tau\bigr]
-\end{equation}
-where the forward hidden state is computed by the standard LSTM recurrence:
-\begin{align}
-  \mathbf{f}_\tau &= \sigma\bigl(\mathbf{W}_f [\mathbf{h}_{\tau-1}; \mathbf{x}_\tau] + \mathbf{b}_f\bigr) \label{eq:forget_gate}\\
-  \mathbf{i}_\tau &= \sigma\bigl(\mathbf{W}_i [\mathbf{h}_{\tau-1}; \mathbf{x}_\tau] + \mathbf{b}_i\bigr) \label{eq:input_gate}\\
-  \tilde{\mathbf{c}}_\tau &= \tanh\bigl(\mathbf{W}_c [\mathbf{h}_{\tau-1}; \mathbf{x}_\tau] + \mathbf{b}_c\bigr) \label{eq:cell_candidate}\\
-  \mathbf{c}_\tau &= \mathbf{f}_\tau \odot \mathbf{c}_{\tau-1} + \mathbf{i}_\tau \odot \tilde{\mathbf{c}}_\tau \label{eq:cell_state}\\
-  \mathbf{o}_\tau &= \sigma\bigl(\mathbf{W}_o [\mathbf{h}_{\tau-1}; \mathbf{x}_\tau] + \mathbf{b}_o\bigr) \label{eq:output_gate}\\
-  \overrightarrow{\mathbf{h}}_{\tau} &= \mathbf{o}_\tau \odot \tanh(\mathbf{c}_\tau) \label{eq:hidden_state}
-\end{align}
-Here, $\sigma(\cdot)$ is the sigmoid function, $\odot$ denotes element-wise multiplication, and $\mathbf{W}_*, \mathbf{b}_*$ are learnable parameters. The \textbf{hidden state transition} $\mathbf{h}_{\tau} \to \mathbf{h}_{\tau+1}$ integrates the current input $\mathbf{x}_{\tau+1}$ with the memory carried in $\mathbf{c}_\tau$, enabling the network to model long-range character dependencies in handwriting (e.g., recognising that ``tion'' likely follows ``na'' in ``nation'').
-
-% ── Diagram placeholder ──
-\begin{figure}[H]
-  \centering
-  \fbox{\parbox{0.85\textwidth}{\centering
-    \vspace{2cm}
-    \textbf{[INSERT DIAGRAM 2 HERE]} \\[0.5em]
-    CRNN architecture: CNN feature extractor $\to$ column-wise sequence \\
-    $\to$ BiLSTM encoder $\to$ CTC decoder. Show the unrolled RNN with \\
-    $h_{\tau} \to h_{\tau+1}$ transitions and the softmax output layer.
-    \vspace{2cm}
-  }}
-  \caption{CRNN architecture for handwriting recognition. The CNN converts the 2D crop into a 1D feature sequence; the BiLSTM captures contextual dependencies between handwritten strokes; the CTC layer decodes the variable-length output without requiring pre-segmented character labels.}
-  \label{fig:crnn_arch}
-\end{figure}
-
-
-% ── 3.3 CTC Loss ──
-\subsection{Connectionist Temporal Classification (CTC) Loss}\label{sec:ctc}
-
-The central challenge in sequence recognition is \textbf{alignment}: the model produces $T$ time-step outputs, but the target label $\mathbf{l}$ has $S \leq T$ characters. CTC~\cite{graves2006ctc} resolves this by introducing a \emph{blank} token $\epsilon$ and marginalising over all valid alignments. This property is especially valuable for handwriting, where character widths vary dramatically depending on the writer's style.
-
-\paragraph{Augmented Alphabet.}
-Define $\Sigma' = \Sigma \cup \{\epsilon\}$, where $\epsilon$ is a special blank symbol that encodes ``no output at this time-step.''
-
-\paragraph{Per-Time-Step Distribution.}
-A linear projection followed by softmax transforms each BiLSTM output into a probability distribution over $\Sigma'$:
-\begin{equation}\label{eq:softmax}
-  y_k^\tau = P(\pi_\tau = k \mid \mathbf{h}_\tau) = \frac{\exp(\mathbf{w}_k^\top \mathbf{h}_\tau + b_k)}{\sum_{k'=1}^{|\Sigma'|} \exp(\mathbf{w}_{k'}^\top \mathbf{h}_\tau + b_{k'})}
-\end{equation}
-where $\pi_\tau \in \Sigma'$ is the emitted symbol at time $\tau$.
-
-\paragraph{Alignment Path.}
-A \emph{path} $\boldsymbol{\pi} = (\pi_1, \pi_2, \ldots, \pi_T)$ is a length-$T$ sequence over $\Sigma'$. The \emph{many-to-one} mapping $\mathcal{B}: \Sigma'^T \to \Sigma^{\leq T}$ removes repeated characters and then removes all $\epsilon$ symbols. For example:
-\[
-  \mathcal{B}(\text{a}, \epsilon, \epsilon, \text{b}, \text{b}, \epsilon, \text{c}) = \text{abc}
-\]
-
-\paragraph{Conditional Probability.}
-Assuming conditional independence between time-steps given the hidden states, the probability of a path is:
-\begin{equation}\label{eq:path_prob}
-  P(\boldsymbol{\pi} \mid \mathbf{I}) = \prod_{\tau=1}^{T} y_{\pi_\tau}^\tau
-\end{equation}
-
-The probability of the target label $\mathbf{l}$ is obtained by marginalising over all paths that collapse to $\mathbf{l}$:
-\begin{equation}\label{eq:ctc_marginal}
-  \boxed{P(\mathbf{l} \mid \mathbf{I}) = \sum_{\boldsymbol{\pi} \in \mathcal{B}^{-1}(\mathbf{l})} \prod_{\tau=1}^{T} y_{\pi_\tau}^\tau}
-\end{equation}
-
-\paragraph{CTC Loss Function.}
-The training objective is to maximise the log-likelihood, or equivalently minimise the negative log-probability:
-\begin{equation}\label{eq:ctc_loss}
-  \boxed{\Loss_{\text{CTC}} = -\ln P(\mathbf{l} \mid \mathbf{I}) = -\ln \sum_{\boldsymbol{\pi} \in \mathcal{B}^{-1}(\mathbf{l})} \prod_{\tau=1}^{T} y_{\pi_\tau}^\tau}
-\end{equation}
-
-Direct enumeration of $\mathcal{B}^{-1}(\mathbf{l})$ is computationally intractable (exponential in $T$). Graves et al.~\cite{graves2006ctc} showed that the forward-backward algorithm—analogous to the HMM forward algorithm—computes $P(\mathbf{l} \mid \mathbf{I})$ in $\mathcal{O}(T \cdot |\mathbf{l}'|)$ time, where $\mathbf{l}' = (\epsilon, l_1, \epsilon, l_2, \epsilon, \ldots, \epsilon, l_S, \epsilon)$ is the modified label with interleaved blanks.
-
-\paragraph{Forward Variable.}
-Define the forward variable:
-\begin{equation}\label{eq:forward_var}
-  \alpha_\tau(s) = \sum_{\substack{\boldsymbol{\pi}_{1:\tau} \\ \mathcal{B}(\boldsymbol{\pi}_{1:\tau}) = \mathbf{l}'_{1:s}}} \prod_{t=1}^{\tau} y_{\pi_t}^t
-\end{equation}
-This represents the total probability of all length-$\tau$ sub-paths whose collapsed output matches the first $s$ symbols of $\mathbf{l}'$. The recursion and base cases follow standard dynamic programming over the lattice $(1 \leq \tau \leq T) \times (1 \leq s \leq |\mathbf{l}'|)$.
-
-% ── Diagram placeholder ──
-\begin{figure}[H]
-  \centering
-  \fbox{\parbox{0.85\textwidth}{\centering
-    \vspace{2.5cm}
-    \textbf{[INSERT DIAGRAM 3 HERE]} \\[0.5em]
-    CTC alignment lattice showing the forward variable $\alpha_\tau(s)$ \\
-    over time-steps $\tau$ (horizontal) and modified-label positions $s$ \\
-    (vertical). Illustrate allowed transitions: stay on blank, \\
-    stay on same character, or advance to next character.
-    \vspace{2.5cm}
-  }}
-  \caption{CTC forward-backward lattice. Horizontal axis: RNN time-steps $\tau$. Vertical axis: modified label positions $s$. Arrows indicate the allowed transitions used in the dynamic programming computation of $P(\mathbf{l} \mid \mathbf{I})$.}
-  \label{fig:ctc_lattice}
-\end{figure}
-
-
-\paragraph{Decoding.}
-At inference time, the most probable label is obtained via:
-\begin{equation}\label{eq:ctc_decode}
-  \mathbf{l}^* = \mathcal{B}\!\left(\argmax_{\boldsymbol{\pi}} P(\boldsymbol{\pi} \mid \mathbf{I})\right) \approx \mathcal{B}\!\left(\argmax_{\pi_1} y_{\pi_1}^1,\; \argmax_{\pi_2} y_{\pi_2}^2,\; \ldots,\; \argmax_{\pi_T} y_{\pi_T}^T\right)
-\end{equation}
-The right-hand side is the \emph{greedy decoding} approximation, which selects the most probable symbol at each time-step independently. While not globally optimal, it is computationally efficient and works well in practice when combined with a sufficiently expressive BiLSTM encoder.
-
-
-
-% ══════════════════════════════════════════════════════════════
-% SECTION 5: APPLICATION
-% ══════════════════════════════════════════════════════════════
-\section{Application}\label{sec:application}
-
-\subsection{Pipeline Architecture: Four-Module Walkthrough}
-
-Our pipeline is implemented as four independent Python scripts, each owned by a different team member to enable fully asynchronous development. Figure~\ref{fig:pipeline_flow} illustrates the data flow.
-
-% ── Diagram placeholder ──
-\begin{figure}[H]
-  \centering
-  \fbox{\parbox{0.9\textwidth}{\centering
-    \vspace{1.5cm}
-    \textbf{[INSERT DIAGRAM 4 HERE]} \\[0.5em]
-    Pipeline flow diagram: \\
-    \texttt{data\_prep.py} $\to$ \texttt{layout\_detector.py} $\to$ \texttt{sequence\_transcriber.py} $\to$ \texttt{pipeline\_orchestrator.py} \\[0.3em]
-    Show data types at each boundary: \\
-    Whiteboard Photos $\to$ YOLO labels $\to$ \texttt{np.ndarray} image $\to$ \texttt{CroppedRegion[]} $\to$ \texttt{TranscriptionResult[]} $\to$ Markdown
-    \vspace{1.5cm}
-  }}
-  \caption{End-to-end data flow through the four-module whiteboard digitisation pipeline.}
-  \label{fig:pipeline_flow}
-\end{figure}
-
-\subsubsection{Module 1: \texttt{data\_prep.py} — Data Acquisition \& Generation}
-
-This module handles the offline preparation of training and evaluation data:
-\begin{enumerate}
-  \item Generates a configurable set ($n = 30$) of synthetic whiteboard images with randomised region placements.
-  \item Creates COCO-format JSON annotations for five classes: Handwriting, Diagram, Arrow, Equation, and Sticky Note.
-  \item Converts each bounding box from COCO format $[x_{\min}, y_{\min}, w, h]$ (absolute pixels) to YOLO format $[x_c, y_c, w_n, h_n]$ (normalised to $[0,1]$) using Equation~\eqref{eq:crop}.
-  \item Writes per-image \texttt{.txt} label files and a \texttt{dataset.yaml} configuration.
-\end{enumerate}
-
-\subsubsection{Module 2: \texttt{layout\_detector.py} — Spatial Detection \& Cropping}
-
-This module performs the spatial detection stage:
-\begin{enumerate}
-  \item Loads a YOLOv8-nano checkpoint via the Ultralytics API.
-  \item Accepts a whiteboard image (camera photo or scan).
-  \item Applies whiteboard-specific preprocessing (CLAHE contrast enhancement for uneven lighting).
-  \item Runs single-shot inference to produce bounding-box predictions for five region classes.
-  \item Mathematically crops each detected region from the original image tensor.
-  \item Returns a sorted list of \texttt{CroppedRegion} dataclass instances (sorted top-to-bottom for spatial ordering).
-\end{enumerate}
-
-\subsubsection{Module 3: \texttt{sequence\_transcriber.py} — OCR Recognition}
-
-This is the advanced module implementing the sequential recognition stage:
-\begin{enumerate}
-  \item Wraps the PP-OCRv3 engine (with fallback to EasyOCR and Tesseract).
-  \item Applies whiteboard-optimised preprocessing (CLAHE, morphological denoising, deskew correction, adaptive thresholding).
-  \item Runs CTC-decoded inference on each cropped Handwriting and Equation region.
-  \item Returns \texttt{TranscriptionResult} objects containing decoded text and confidence scores.
-\end{enumerate}
-
-\subsubsection{Module 4: \texttt{pipeline\_orchestrator.py} — Integration \& Output}
-
-The orchestrator chains the three upstream modules into a single CLI-invocable pipeline:
-\begin{lstlisting}[language=bash, caption={Pipeline invocation}]
-python pipeline_orchestrator.py whiteboard_photo.jpg --conf 0.25
-\end{lstlisting}
-
-The execution flow is:
-\begin{align*}
-  &\texttt{Ingestion:} \quad \text{Whiteboard Photo} \xrightarrow{\texttt{OpenCV}} \mathbf{I} \in \Reals^{H \times W \times 3} \\
-  &\texttt{Detection:} \quad \mathbf{I} \xrightarrow{\text{YOLOv8}} \bigl\{\texttt{CroppedRegion}_i\bigr\}_{i=1}^{N} \\
-  &\texttt{Transcription:} \quad \bigl\{\texttt{CroppedRegion}_i\bigr\} \xrightarrow{\text{PP-OCRv3}} \bigl\{\texttt{TranscriptionResult}_i\bigr\}_{i=1}^{N} \\
-  &\texttt{Assembly:} \quad \bigl\{\texttt{TranscriptionResult}_i\bigr\} \xrightarrow{\text{Markdown}} \texttt{output.md}
-\end{align*}
-
-\section{Context}
-\subsection{Precedent Topics}
-OCR builds on earlier ideas in image processing and pattern recognition. Historically, systems used hand-crafted features and template matching, often with explicit segmentation of characters before classification \cite{mori1999ocrsurvey}. Later, statistical sequence models (e.g., Hidden Markov Models) and language modeling improved robustness to ambiguous visual evidence.
-
-With deep learning, representation learning replaced many hand-crafted components. Convolutional neural networks (CNNs) improved visual feature extraction, while recurrent and attention-based sequence models improved recognition from variable-width text images \cite{shi2016crnn,jaderberg2016reading}.
-
-\subsection{Successor Topics}
-Modern OCR is increasingly a subsystem rather than a final task. It feeds into higher-level document intelligence pipelines such as key information extraction, form understanding, legal/medical document analysis, and retrieval-augmented generation over scanned archives. End-to-end document AI models combine text, layout, and visual structure in a multimodal framework.
-
-\subsection{Tangential Topics}
-Related areas include:
-\begin{itemize}[leftmargin=*]
-    \item \textbf{Handwritten Text Recognition (HTR):} stronger variability in stroke style and character formation.
-    \item \textbf{Scene Text Recognition:} perspective distortion, motion blur, and cluttered backgrounds.
-    \item \textbf{Language-aware Correction:} spelling correction and constrained decoding that borrow from NLP.
-\end{itemize}
-
-\subsection{Historical Progression}
-At a high level, OCR has evolved from rule/template-based systems to deep end-to-end recognition \cite{mori1999ocrsurvey,smith2007tesseract,shi2016crnn,baek2019str}:
-\begin{enumerate}[leftmargin=*]
-    \item Character templates and engineered features.
-    \item Statistical sequence models with handcrafted preprocessing.
-    \item CNN-RNN hybrids (e.g., CRNN) and CTC-based training.
-    \item Attention and transformer-based recognizers with stronger language priors.
-\end{enumerate}
-
-\section{Evaluation Snapshot}
-Common OCR metrics include:
-\begin{itemize}[leftmargin=*]
-    \item \textbf{Character Error Rate (CER):} normalized edit distance at character level.
-    \item \textbf{Word Error Rate (WER):} normalized edit distance at word level.
-    \item \textbf{Exact Match Accuracy:} fraction of predictions exactly equal to reference strings.
-\end{itemize}
-
-Let $S$, $D$, and $I$ be substitution, deletion, and insertion counts from edit distance, and let $N$ be reference length. Then:
-\[
-\text{CER} = \frac{S + D + I}{N}.
-\]
+\textbf{Detection-aware recognition.} Define \emph{recognition rate given correct localization}: mean CER only on pairs with IoU above $\tau$, to isolate the recognizer. Conversely, report \emph{word recall} at the pipeline output: fraction of reference words that appear in any hypothesis after matching---this stresses detection.
 
 \begin{table}[h]
 \centering
-\caption{Typical OCR Evaluation Summary}
-\begin{tabular}{@{}lll@{}}
+\caption{Metrics by pipeline stage (summary)}
+\begin{tabular}{@{}p{0.22\linewidth}p{0.35\linewidth}p{0.33\linewidth}@{}}
 \toprule
-Metric & Measures & Typical Use \\
+Stage & Primary metrics & What they reveal \\
 \midrule
-CER & Character-level errors & General recognition quality \\
-WER & Word-level errors & Readability and downstream parsing \\
-Exact Match & Full-string correctness & Strict field extraction \\
+Detection (Mask R-CNN) & AP / mAP, Precision/Recall/$F_1$ at IoU $\tau$, mask IoU & Localization, duplicates, misses \\
+Recognition (CRNN) & CER, WER, exact match (on GT or detector crops) & Reading quality independent of or coupled to crops \\
+End-to-end & Matched-pair CER/WER, unmatched FP/FN counts, page-level edit distance & Compounding effects and reading order \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Frequently used datasets include IAM (handwriting), ICDAR benchmarks (scene/document text), and large synthetic corpora used for pretraining \cite{baek2019str,li2021trba}.
+Frequently used corpora include IAM for handwriting \cite{marti2002iam}, ICDAR-style scene and document benchmarks, and synthetic pretraining sets analyzed in STR studies \cite{baek2019str,li2021trba}.
 
 
-% ══════════════════════════════════════════════════════════════
-% SECTION 6: SOURCES
-% ══════════════════════════════════════════════════════════════
-\section{Sources}\label{sec:sources}
+
+\section{References}
 
 \printbibliography[heading=none]
 
