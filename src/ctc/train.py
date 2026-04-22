@@ -337,7 +337,7 @@ def train_ctc(cfg: TrainConfig | None = None) -> Path:
         model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay
     )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimiser, mode="min", factor=0.5, patience=3, verbose=True
+        optimiser, mode="min", factor=0.5, patience=3
     )
 
     use_amp = device.type == "cuda"
