@@ -238,7 +238,7 @@ _TEMPLATES = [
     lambda: rf"\sin({_rand_var()}) = \cos(\frac{{\pi}}{{2}} - {_rand_var()})",
     # Integrals
     lambda: rf"\int_{{0}}^{{{_rand_num()}}} {_rand_var()} \, d{_rand_var()}",
-    lambda: rf"\int {_rand_var()}^{{{_rand_num()}}} \, d{_rand_var()} = \frac{{{_rand_var()}^{{{_rand_num()+1}}}}}{{{_rand_num()+1}}}",
+    lambda: rf"\int {_rand_var()}^{{{_rand_num()}}} \, d{_rand_var()} = \frac{{{_rand_var()}^{{{random.randint(2, 10)}}}}}{{{random.randint(2, 10)}}}",
     # Limits
     lambda: r"\lim_{x \to 0} f(x)",
     # Random composed expression
