@@ -127,14 +127,21 @@ def _build_pairs(
     cfg: TrainConfig,
     tokenizer: LatexTokenizer,
     split: str,
+    verbose: bool = True,
 ) -> list[tuple[np.ndarray, list[int]]]:
     """Build (image, label_indices) pairs for a given split."""
+    try:
+        from tqdm.auto import tqdm as _tqdm
+    except ImportError:
+        _tqdm = None
+
     corpus = LatexCorpus(
         n_train=cfg.n_train,
         n_val=cfg.n_val,
         seed=cfg.seed,
     )
 
+    n_target = cfg.n_train if split == "train" else cfg.n_val
     stream: Iterator[tuple[np.ndarray, str]]
     if split == "train":
         stream = corpus.train()
@@ -142,20 +149,33 @@ def _build_pairs(
         stream = corpus.val()
 
     pairs: list[tuple[np.ndarray, list[int]]] = []
+    bar = (
+        _tqdm(total=n_target, desc=f"Rendering {split}", unit="img", dynamic_ncols=True)
+        if verbose and _tqdm is not None
+        else None
+    )
     for img, latex in stream:
         ids = tokenizer.encode(latex)
-        if ids:  # skip if tokeniser produces empty encoding
+        if ids:
             pairs.append((img, ids))
+            if bar is not None:
+                bar.update(1)
+    if bar is not None:
+        bar.close()
 
     # Add InkML real data (train only)
     if split == "train" and cfg.inkml_dirs:
+        ink_count_before = len(pairs)
         for inkml_dir in cfg.inkml_dirs:
+            dir_name = Path(inkml_dir).name
             ink_pairs = load_inkml_dataset(inkml_dir, augment=True)
+            if verbose:
+                print(f"  InkML [{dir_name}]: {len(ink_pairs)} samples")
             for img, latex in ink_pairs:
                 ids = tokenizer.encode(latex)
                 if ids:
                     pairs.append((img, ids))
-        print(f"[CTC] InkML samples added: {len(pairs) - cfg.n_train}")
+        print(f"[CTC] InkML samples added: {len(pairs) - ink_count_before}")
 
     rng = random.Random(cfg.seed + (0 if split == "train" else 1))
     rng.shuffle(pairs)
