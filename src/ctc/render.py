@@ -224,13 +224,9 @@ _TEMPLATES = [
     lambda: rf"{_rand_var()} = \frac{{{_rand_expr()}}}{{{_rand_expr()}}}",
     # Equations with equals
     lambda: f"{_rand_expr()} = {_rand_expr()}",
-    # Bayes-like
-    lambda: (
-        r"P(A|B) = \frac{P(B|A)P(A)}{P(B)}"
-    ),
-    lambda: (
-        r"P(\theta|D) = \frac{P(D|\theta)P(\theta)}{P(D)}"
-    ),
+    # Bayes-like  (use \mid — matplotlib mathtext does not support | inside \frac{}{})
+    lambda: r"P(A \mid B) = \frac{P(B \mid A) P(A)}{P(B)}",
+    lambda: r"P(\theta \mid D) = \frac{P(D \mid \theta) P(\theta)}{P(D)}",
     # Powers and indices
     lambda: f"{_rand_var()}^{{{_rand_num()}}} + {_rand_var()}^{{{_rand_num()}}}",
     lambda: f"e^{{{_rand_var()}}} = \sum_{{n=0}}^{{\infty}} \\frac{{{_rand_var()}^n}}{{n!}}",
