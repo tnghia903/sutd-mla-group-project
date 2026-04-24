@@ -22,7 +22,6 @@ from .model import CRNN
 def preprocess_for_ctc(
     crop: np.ndarray,
     target_height: int = 32,
-    binarize: bool = True,
 ) -> np.ndarray:
     """
     Preprocess an equation crop for CRNN input.
@@ -31,15 +30,11 @@ def preprocess_for_ctc(
         1. White padding (20 px) — compensates for tight YOLO crops.
         2. CLAHE on LAB luminance — boosts low-contrast marker strokes.
         3. Grayscale conversion.
-        4. Otsu binarization (optional) — maps whiteboard photo to clean
-           black-on-white, closing the gap with synthetic training images.
-        5. Aspect-ratio-preserving resize to target_height.
+        4. Aspect-ratio-preserving resize to target_height.
 
     Parameters:
         crop:          RGB or grayscale uint8 numpy array.
         target_height: Output height (must match CRNN training height).
-        binarize:      Apply Otsu thresholding after CLAHE.  Set True for
-                       real whiteboard crops; False for already-clean renders.
 
     Returns:
         Grayscale uint8 array of shape (target_height, W).
@@ -71,11 +66,7 @@ def preprocess_for_ctc(
     # Step 3: Grayscale
     gray = cv2.cvtColor(enhanced, cv2.COLOR_RGB2GRAY)
 
-    # Step 4: Otsu binarization — stroke pixels → 0, background → 255
-    if binarize:
-        _, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    # Step 5: Resize to target_height preserving aspect ratio
+    # Step 4: Resize to target_height preserving aspect ratio
     h, w = gray.shape
     scale = target_height / h
     new_w = max(16, round(w * scale))
