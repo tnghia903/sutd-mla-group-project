@@ -229,7 +229,7 @@ _TEMPLATES = [
     lambda: r"P(\theta \mid D) = \frac{P(D \mid \theta) P(\theta)}{P(D)}",
     # Powers and indices
     lambda: f"{_rand_var()}^{{{_rand_num()}}} + {_rand_var()}^{{{_rand_num()}}}",
-    lambda: f"e^{{{_rand_var()}}} = \sum_{{n=0}}^{{\infty}} \\frac{{{_rand_var()}^n}}{{n!}}",
+    lambda: f"e^{{{_rand_var()}}} = \\sum_{{n=0}}^{{\\infty}} \\frac{{{_rand_var()}^n}}{{n!}}",
     # Simple numbers / algebra
     lambda: f"{_rand_num()} + {_rand_num()} = {_rand_num()}",
     lambda: f"{_rand_num()} \\times {_rand_num()} = {_rand_num(1, 81)}",
