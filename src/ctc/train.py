@@ -328,6 +328,9 @@ def train_ctc(cfg: TrainConfig | None = None) -> Path:
     # Model
     model = CRNN(num_classes=tokenizer.num_classes, hidden_size=cfg.hidden_size)
     model = model.to(device)
+    if device.type == "cuda" and torch.cuda.device_count() > 1:
+        print(f"[CTC] Using {torch.cuda.device_count()} GPUs with DataParallel")
+        model = nn.DataParallel(model)
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[CTC] CRNN parameters: {total_params:,}")
 
@@ -413,13 +416,14 @@ def train_ctc(cfg: TrainConfig | None = None) -> Path:
             print(f"    GT : {gt[:60]}")
             print(f"    Pred: {pred[:60]}")
 
-        # Save best checkpoint
+        # Save best checkpoint (unwrap DataParallel if active)
         if val_cer < best_cer:
             best_cer = val_cer
+            raw_model = model.module if isinstance(model, nn.DataParallel) else model
             torch.save(
                 {
                     "epoch": epoch,
-                    "model_state": model.state_dict(),
+                    "model_state": raw_model.state_dict(),
                     "val_cer": val_cer,
                     "num_classes": tokenizer.num_classes,
                     "hidden_size": cfg.hidden_size,
