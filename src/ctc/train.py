@@ -35,9 +35,10 @@ from .render import LatexCorpus, load_inkml_dataset
 @dataclasses.dataclass
 class TrainConfig:
     # Data
-    n_train: int = 30_000
+    n_train: int = 30_000       # synthetic renders; set 0 to skip synthetic entirely
     n_val: int = 2_000
     inkml_dirs: list[str] = dataclasses.field(default_factory=list)
+    max_inkml_per_dir: int = 0  # cap per directory (0 = load all)
     cache_dir: str = "/content/ctc_data"
     # Model
     hidden_size: int = 256
@@ -135,42 +136,39 @@ def _build_pairs(
     except ImportError:
         _tqdm = None
 
-    corpus = LatexCorpus(
-        n_train=cfg.n_train,
-        n_val=cfg.n_val,
-        seed=cfg.seed,
-    )
-
     n_target = cfg.n_train if split == "train" else cfg.n_val
-    stream: Iterator[tuple[np.ndarray, str]]
-    if split == "train":
-        stream = corpus.train()
-    else:
-        stream = corpus.val()
 
     pairs: list[tuple[np.ndarray, list[int]]] = []
-    bar = (
-        _tqdm(total=n_target, desc=f"Rendering {split}", unit="img", dynamic_ncols=True)
-        if verbose and _tqdm is not None
-        else None
-    )
-    for img, latex in stream:
-        ids = tokenizer.encode(latex)
-        if ids:
-            pairs.append((img, ids))
-            if bar is not None:
-                bar.update(1)
-    if bar is not None:
-        bar.close()
+
+    # Synthetic rendering (skipped when n_target == 0)
+    if n_target > 0:
+        corpus = LatexCorpus(n_train=cfg.n_train, n_val=cfg.n_val, seed=cfg.seed)
+        stream: Iterator[tuple[np.ndarray, str]] = (
+            corpus.train() if split == "train" else corpus.val()
+        )
+        bar = (
+            _tqdm(total=n_target, desc=f"Rendering {split}", unit="img", dynamic_ncols=True)
+            if verbose and _tqdm is not None else None
+        )
+        for img, latex in stream:
+            ids = tokenizer.encode(latex)
+            if ids:
+                pairs.append((img, ids))
+                if bar is not None:
+                    bar.update(1)
+        if bar is not None:
+            bar.close()
+    else:
+        if verbose:
+            print(f"[CTC] Synthetic rendering skipped (n_{split}=0)")
 
     # Add InkML real data (train only)
     if split == "train" and cfg.inkml_dirs:
         ink_count_before = len(pairs)
         for inkml_dir in cfg.inkml_dirs:
-            dir_name = Path(inkml_dir).name
-            ink_pairs = load_inkml_dataset(inkml_dir, augment=True)
-            if verbose:
-                print(f"  InkML [{dir_name}]: {len(ink_pairs)} samples")
+            ink_pairs = load_inkml_dataset(
+                inkml_dir, augment=True, max_samples=cfg.max_inkml_per_dir
+            )
             for img, latex in ink_pairs:
                 ids = tokenizer.encode(latex)
                 if ids:

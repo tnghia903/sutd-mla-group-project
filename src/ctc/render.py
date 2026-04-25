@@ -410,20 +410,39 @@ def load_inkml_dataset(
     inkml_dir: str | Path,
     target_height: int = 32,
     augment: bool = True,
+    max_samples: int = 0,
 ) -> list[tuple[np.ndarray, str]]:
     """
-    Load all InkML files from a directory as (image, label) pairs.
+    Load InkML files from a directory as (image, label) pairs.
 
     Parameters:
         inkml_dir:     Directory containing .inkml files.
         target_height: Image height.
         augment:       Whether to apply augmentations.
+        max_samples:   Cap on files to load (0 = load all).
 
     Returns:
         List of (grayscale_image, latex_label) tuples.
     """
+    try:
+        from tqdm.auto import tqdm as _tqdm
+    except ImportError:
+        _tqdm = None
+
+    all_paths = sorted(Path(inkml_dir).glob("*.inkml"))
+    if max_samples and len(all_paths) > max_samples:
+        # Evenly-spaced subsample so we cover the full distribution
+        step = len(all_paths) / max_samples
+        all_paths = [all_paths[int(i * step)] for i in range(max_samples)]
+
+    desc = f"InkML {Path(inkml_dir).name}"
+    iterable = (
+        _tqdm(all_paths, desc=desc, unit="file", dynamic_ncols=True)
+        if _tqdm else all_paths
+    )
+
     pairs: list[tuple[np.ndarray, str]] = []
-    for p in sorted(Path(inkml_dir).glob("*.inkml")):
+    for p in iterable:
         result = inkml_to_image(p, target_height=target_height, augment=augment)
         if result is not None:
             pairs.append(result)
