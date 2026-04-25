@@ -243,6 +243,274 @@ mla-proj/
 
 ---
 
+## Python Walkthrough — Core Ideas Step by Step
+
+This section walks through each key idea in the pipeline with self-contained Python snippets you can run independently.
+
+### Step 1 — CTC Alphabet and Token Encoding
+
+The model operates on a token-level vocabulary (not raw characters). Index 0 is always the CTC blank token `ε`.
+
+```python
+from src.ctc.charset import CHARSET, BLANK_IDX, NUM_CLASSES
+
+print(f"Vocabulary size: {NUM_CLASSES}")   # 174
+print(f"Blank index:     {BLANK_IDX}")     # 0
+print(f"First 10 tokens: {CHARSET[:10]}")  # ['ε', '0', '1', ..., '9']
+
+# Encode a LaTeX string token-by-token
+from src.ctc.charset import LatexTokenizer
+
+tok = LatexTokenizer()
+indices = tok.encode(r"x^{2}")
+print(f"Encoded: {indices}")              # e.g. [59, 94, 53, 95]
+decoded = tok.decode(indices)
+print(f"Decoded: {decoded}")              # 'x^{2}'
+```
+
+---
+
+### Step 2 — CRNN Model (CNN → BiLSTM → log-softmax)
+
+The CRNN maps a fixed-height image strip `(B, 1, 32, W)` to a sequence of per-timestep class distributions `(B, T, |Σ'|)`.
+
+```python
+import torch
+from src.ctc.model import CRNN
+
+model = CRNN(num_classes=174, hidden_size=256)
+model.eval()
+
+# Simulate a batch of 2 images, width 128
+x = torch.rand(2, 1, 32, 128)
+
+with torch.no_grad():
+    log_probs = model(x)          # (2, T, 174)  — log-softmax output
+    probs     = model.get_probs(x)  # (2, T, 174)  — softmax output
+
+print(f"T (timesteps) = {log_probs.shape[1]}")   # ≈ 31 for W=128
+print(f"Each value in [−∞, 0]: {log_probs.max().item():.3f}")
+```
+
+The CNN collapses the height dimension to 1 via pooling; each remaining column becomes one timestep for the LSTM.
+
+---
+
+### Step 3 — CTC Loss (training)
+
+`nn.CTCLoss` marginalises over all alignments `π ∈ B⁻¹(l)` simultaneously:
+
+$$P(l \mid Y) = \sum_{\pi \in B^{-1}(l)} \prod_{t=1}^{T} y_{\pi_t}^t$$
+
+```python
+import torch
+import torch.nn as nn
+from src.ctc.model import CRNN
+from src.ctc.charset import LatexTokenizer
+
+model = CRNN(num_classes=174)
+ctc_loss = nn.CTCLoss(blank=0, reduction="mean", zero_infinity=True)
+tok = LatexTokenizer()
+
+# One training example: image width 128, target "x^{2}"
+x = torch.rand(1, 1, 32, 128)
+log_probs = model(x)                        # (1, T, 174)
+log_probs_t = log_probs.permute(1, 0, 2)   # CTCLoss expects (T, B, C)
+
+target  = torch.tensor(tok.encode(r"x^{2}"), dtype=torch.long)
+T       = log_probs_t.shape[0]
+
+loss = ctc_loss(
+    log_probs_t,
+    target.unsqueeze(0),          # (B=1, label_len)
+    torch.tensor([T]),            # input lengths
+    torch.tensor([len(target)]),  # target lengths
+)
+print(f"CTC loss: {loss.item():.4f}")
+```
+
+---
+
+### Step 4 — CTC Greedy Decoding (inference)
+
+At inference time, take the argmax at each timestep, then apply the collapsing function B:
+
+1. Remove consecutive duplicates.
+2. Remove all blank tokens.
+
+```python
+import numpy as np
+from src.ctc.decode import ctc_collapse_sequence, ctc_greedy_decode
+
+# Simulated raw alignment from argmax: [0, 0, 5, 5, 0, 12, 12, 0]
+#   0 = blank ε,  5 = 'x',  12 = '2'
+raw_path = [0, 0, 5, 5, 0, 12, 12, 0]
+
+idx_to_char = {0: "ε", 5: "x", 12: "2"}
+collapsed = ctc_collapse_sequence(raw_path, blank_idx=0, idx_to_char=idx_to_char)
+print(f"Decoded: '{collapsed}'")   # 'x2'
+
+# From a full probability matrix (T=8, C=174)
+probs = np.zeros((8, 174))
+for t, idx in enumerate(raw_path):
+    probs[t, idx] = 0.9            # dominant class at each step
+
+decoded, greedy_path = ctc_greedy_decode(probs, blank_idx=0, idx_to_char=idx_to_char)
+print(f"Greedy decoded: '{decoded}'")     # 'x2'
+print(f"Greedy path:    {greedy_path}")   # [0 0 5 5 0 12 12 0]
+```
+
+---
+
+### Step 5 — Beam Search Decoding
+
+Beam search keeps the top-k hypotheses at each step instead of committing to the single argmax, recovering sequences that greedy misses.
+
+```python
+import numpy as np
+from src.ctc.decode import ctc_beam_search
+
+# Probability matrix: T=6 timesteps, 5 classes (0=blank, 1='a', 2='b', 3='c', 4='d')
+probs = np.array([
+    [0.6, 0.2, 0.1, 0.05, 0.05],  # t=0 — strong blank
+    [0.1, 0.7, 0.1, 0.05, 0.05],  # t=1 — 'a'
+    [0.6, 0.1, 0.2, 0.05, 0.05],  # t=2 — blank
+    [0.1, 0.1, 0.7, 0.05, 0.05],  # t=3 — 'b'
+    [0.6, 0.1, 0.1, 0.15, 0.05],  # t=4 — blank
+    [0.1, 0.1, 0.1, 0.1,  0.6 ],  # t=5 — 'd'
+])
+
+idx_to_char = {0: "ε", 1: "a", 2: "b", 3: "c", 4: "d"}
+
+results = ctc_beam_search(probs, blank_idx=0, beam_width=3, idx_to_char=idx_to_char)
+for label, log_prob in results:
+    print(f"  '{label}'  log_prob={log_prob:.3f}")
+# top result: 'abd'
+```
+
+---
+
+### Step 6 — Image Preprocessing for CRNN Input
+
+Raw equation crops are noisy. The preprocessing pipeline standardises them before feeding the CNN:
+
+```python
+import cv2
+import numpy as np
+from src.ctc.infer import preprocess_for_ctc
+
+# Load any equation crop (e.g. a YOLO output crop)
+crop = cv2.imread("data/images/sample_equation.jpg")
+crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+
+# Pipeline: white padding → CLAHE enhancement → grayscale → resize to H=32
+gray_32 = preprocess_for_ctc(crop_rgb, target_height=32)
+print(f"Output shape: {gray_32.shape}")   # (32, W) — variable width
+```
+
+---
+
+### Step 7 — End-to-End Inference with the Trained Checkpoint
+
+Load the checkpoint and run recognition on an equation crop:
+
+```python
+import cv2
+from src.ctc.infer import CTCRecogniser
+
+rec = CTCRecogniser("model/ctc_best.pt")   # loads CRNN weights
+
+crop = cv2.imread("data/images/sample_equation.jpg")
+crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+
+latex, probs, greedy_indices = rec.recognise(crop_rgb)
+
+print(f"LaTeX:  {latex}")
+print(f"probs shape:          {probs.shape}")           # (T, 174)
+print(f"greedy_indices shape: {greedy_indices.shape}")  # (T,)
+```
+
+`probs` is the full `(T, num_classes)` probability matrix — pass it to `ctc_beam_search` or visualise it as a heatmap to inspect what the model attends to at each timestep.
+
+---
+
+### Step 8 — YOLOv8 Region Detection + Post-processing
+
+Before OCR, the pipeline detects `equation` and `whiteboard` bounding boxes and filters false positives:
+
+```python
+from ultralytics import YOLO
+from src.detect_layout import (
+    image_file_to_array,
+    run_inference,
+    filter_by_center_y,
+    merge_nearby_equations,
+    equations_inside_whiteboards,
+)
+
+yolo = YOLO("model/best_v2.pt")
+img  = image_file_to_array("data/images/your_photo.jpg")   # returns RGB ndarray
+H, W = img.shape[:2]
+
+# Run YOLO — returns list[CroppedRegion] sorted top-to-bottom
+regions     = run_inference(yolo, img, conf=0.25)
+equations   = [r for r in regions if r.class_id == 0]   # class 0 = equation
+whiteboards = [r for r in regions if r.class_id == 1]   # class 1 = whiteboard
+
+# Filter 1: drop equations whose centre is in the top 25% (ceiling artefacts)
+equations = filter_by_center_y(equations, image_height=H, min_ratio=0.25)
+
+# Filter 2: merge fragmented equation boxes that are close together
+equations = merge_nearby_equations(equations, img, gap_ratio=0.03)
+
+# Filter 3: keep only equations whose centre falls inside a whiteboard box
+equations = equations_inside_whiteboards(equations, whiteboards)
+
+print(f"Equations detected: {len(equations)}")
+print(f"Whiteboard regions: {len(whiteboards)}")
+```
+
+---
+
+### Step 9 — Full Pipeline (Detection → OCR → Markdown)
+
+```python
+from src.detect_layout import (
+    image_file_to_array,
+    run_inference,
+    filter_by_center_y,
+    merge_nearby_equations,
+    equations_inside_whiteboards,
+)
+from src.ctc.infer import CTCRecogniser, results_to_markdown
+from ultralytics import YOLO
+
+yolo = YOLO("model/best_v2.pt")
+rec  = CTCRecogniser("model/ctc_best.pt")
+
+img  = image_file_to_array("data/images/whiteboard.jpg")
+H, W = img.shape[:2]
+
+regions     = run_inference(yolo, img)
+equations   = [r for r in regions if r.class_id == 0]
+whiteboards = [r for r in regions if r.class_id == 1]
+equations   = filter_by_center_y(equations, H, min_ratio=0.25)
+equations   = merge_nearby_equations(equations, img, gap_ratio=0.03)
+equations   = equations_inside_whiteboards(equations, whiteboards)
+
+latex_results = []
+for eq in equations:
+    latex, _, _ = rec.recognise(eq.crop)   # eq.crop is already the RGB equation patch
+    latex_results.append((latex, ""))      # (ctc_output, fallback)
+
+md = results_to_markdown(equations, latex_results)
+print(md)
+```
+
+Output is a Markdown string with each detected equation rendered inside `$$...$$` LaTeX fences.
+
+---
+
 ## Dependencies
 
 | Package | Purpose |
